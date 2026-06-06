@@ -31,6 +31,7 @@
 #include <libg15.h>
 
 #include "g510s.h"
+#include "g510s-display-registry.h"
 
 
 static int uinp_fd = -1;
@@ -218,8 +219,8 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
   if ((key & G15_KEY_L1) && !(key_state & G15_KEY_L1)) {
     if (num_managed_screens == 0) {
       if (displaylist->head == displaylist->tail) {
-        // No TCP clients: cycle internal screen (clock → cpu → sysmon → claude → clock)
-        g510s_data.internal_screen = (g510s_data.internal_screen + 1) % 4;
+        // No TCP clients: cycle internal screen via registry (only enabled displays)
+        g510s_data.internal_screen = display_registry_next_id(g510s_data.internal_screen);
         displaylist->current->lcd->ident = 0;
       } else {
         // Cycle through connected lcdlist clients
@@ -277,7 +278,8 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
   }
   if ((key & G15_KEY_L2) && !(key_state & G15_KEY_L2)) {
     if (displaylist->tail == displaylist->current) {
-      if (g510s_data.internal_screen == 2) {
+      display_entry_t *d_l2 = display_registry_by_id(g510s_data.internal_screen);
+      if (d_l2 && d_l2->id == DISP_SYSMON) {
         g510s_data.sysmon_disk_offset--;
       } else {
         g510s_data.clock_mode = !g510s_data.clock_mode;
@@ -294,9 +296,10 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
   }
   if ((key & G15_KEY_L3) && !(key_state & G15_KEY_L3)) {
     if (displaylist->tail == displaylist->current) {
-      if (g510s_data.internal_screen == 2) {
+      display_entry_t *d_l3 = display_registry_by_id(g510s_data.internal_screen);
+      if (d_l3 && d_l3->id == DISP_SYSMON) {
         g510s_data.sysmon_disk_offset++;
-      } else if (g510s_data.internal_screen == 0) {
+      } else if (d_l3 && d_l3->id == DISP_CLOCK) {
         g510s_data.show_date = !g510s_data.show_date;
       }
       displaylist->current->lcd->ident = 0;

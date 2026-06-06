@@ -175,3 +175,6 @@ void *lcd_client_function(void *display);
 void *key_function(void *lcdlist);
 void *update_function(void *lcdlist);
 void *server_function(void *lcdlist);
+
+void display_registry_init(void);
+void displays_gui_save(void);

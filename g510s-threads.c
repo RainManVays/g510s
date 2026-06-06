@@ -31,6 +31,7 @@
 #include <libappindicator/app-indicator.h>
 
 #include "g510s.h"
+#include "g510s-display-registry.h"
 
 
 extern AppIndicator *indicator;
@@ -156,14 +157,26 @@ void *key_function(void *lcdlist) {
     printf("G510s: [key_function] starting, highest open fd = %d\n", max_fd);
   }
 
+  /* Set M-key LED state from saved config.  Done here (not in main thread)
+   * so a slow USB wake-up never blocks the GTK event loop.  Same path as
+   * the hotplug reconnect below. */
+  if (device_found)
+    set_mkey_state(g510s_data.mkey_state);
+
   while (!leaving) {
     if (device_found) {
-      keyreturn = getPressedKeys(&key, 0);
+      /* timeout=10ms: libusb_mutex held ≤10ms per poll, then released.
+       * G510 only sends USB interrupt on key change (not continuously),
+       * so timeout=0 (unlimited) would block libusb_mutex forever when
+       * the keyboard is idle, starving set_mkey_state and writePixmapToLCD. */
+      keyreturn = getPressedKeys(&key, 10);
 
       // dont process normal keys; cap retries to avoid infinite spin
+      // Use 1ms timeout in retries: TRY_AGAIN means a normal-key report
+      // arrived; we want to drain those quickly without blocking long.
       int try_again = 0;
       while (keyreturn == G15_ERROR_TRY_AGAIN && !leaving && try_again++ < 10) {
-        keyreturn = getPressedKeys(&key, 0);
+        keyreturn = getPressedKeys(&key, 1);
       }
 
       // process extra keys
@@ -205,7 +218,7 @@ void *key_function(void *lcdlist) {
           g_idle_add(cb_indicator_active, NULL);
         }
       }
-      usleep(10000); /* 10ms between polls: ~100/s, keeps CPU near 0% */
+      /* no usleep: the 10ms getPressedKeys timeout provides the same rate */
     } else { // device was not found
       // wait for a device
       printf("G510s: waiting for device...\n");
@@ -247,8 +260,11 @@ void *update_function(void *lcdlist) {
   while (!leaving) {
     /* Scan JSONL files outside the mutex — cl_load_all() takes 100-500ms and
      * must not hold libg15_mutex during I/O. */
-    if (g510s_data.internal_screen == 3)
-      claude_maybe_scan();
+    {
+      display_entry_t *d_cur = display_registry_by_id(g510s_data.internal_screen);
+      if (d_cur && d_cur->id == DISP_CLAUDE)
+        claude_maybe_scan();
+    }
 
     pthread_mutex_lock(&libg15_mutex);
     if (device_found) {
@@ -277,12 +293,9 @@ void *update_function(void *lcdlist) {
       displaying = displaylist->current->lcd;
 
       if (displaylist->tail == displaylist->current) {
-        if (g510s_data.internal_screen == 1)
-          cpu_screen(displaying);
-        else if (g510s_data.internal_screen == 2)
-          sysmon_screen(displaying);
-        else if (g510s_data.internal_screen == 3)
-          claude_screen(displaying);
+        display_entry_t *d = display_registry_by_id(g510s_data.internal_screen);
+        if (d && d->render_preview)
+          d->render_preview(displaying);
         else
           digital_clock(displaying);
       }

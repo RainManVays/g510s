@@ -99,15 +99,14 @@ vividnightmare/libg15render v1.3.1 **bundled в `libg15render/`** — build.sh �
 
 | Поток | Что делает | Мьютексы |
 |---|---|---|
-| `key_function` | `getPressedKeys(timeout=0)` + `usleep(10ms)` | `libusb_mutex` ≤1ms |
+| `key_function` | `getPressedKeys(timeout=10ms)` | `libusb_mutex` ≤10ms |
 | `update_function` | рендеринг экранов + `writePixmapToLCD` каждые 50ms | `libg15_mutex` → `libusb_mutex` |
 | `server_function` | TCP-клиенты libg15daemon | `lcdlist_mutex` |
 
 **Порядок захвата:** `libg15_mutex` → `lcdlist_mutex` → `libusb_mutex`. Дедлоков нет.
 
 **Ключевые решения:**
-- `timeout=0` в `getPressedKeys`: `libusb_mutex` держится <1ms, LCD-поток не блокируется
-- `usleep(10000)` в `key_function`: ~100 опросов/сек, CPU ≈0%
+- `timeout=10ms` в `getPressedKeys`: G510 шлёт USB interrupt только при нажатии (не непрерывно), поэтому `timeout=0` (unlimited) блокировал `libusb_mutex` вечно когда клавиатура молчала — фикс: 10ms таймаут освобождает мьютекс каждые ≤10ms, заменяет прежний `usleep(10ms)`
 - `claude_maybe_scan()` вызывается вне `libg15_mutex` (занимает до 500ms), рендер claude_screen — внутри
 
 ## Ключевые структуры данных (`g510s.h`)

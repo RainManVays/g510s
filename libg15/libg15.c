@@ -995,8 +995,10 @@ int getPressedKeys(unsigned int *pressed_keys, unsigned int timeout)
     /* Serialize with writePixmapToLCD: both use keyboard_device on the same
      * USB interface. Without this lock, concurrent LCD writes and key reads
      * cause a segfault in libusb internals (observed on G510 at high I/O).
-     * Callers must pass a short timeout (0 = non-blocking) so this lock
-     * is held for at most ~1ms, keeping the LCD thread unblocked. */
+     * NOTE: libusb timeout=0 means UNLIMITED wait, not non-blocking.
+     * G510 sends USB interrupt only on key-state change, so timeout=0
+     * holds this mutex indefinitely when the keyboard is idle.
+     * Callers must pass a short finite timeout (e.g. 10ms). */
     pthread_mutex_lock(&libusb_mutex);
     ret = libusb_interrupt_transfer(keyboard_device, g15_keys_endpoint,
                                     buffer, read_length, &actual, timeout);

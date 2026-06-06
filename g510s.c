@@ -34,6 +34,9 @@
 #include <libappindicator/app-indicator.h>
 
 #include "g510s.h"
+#include "g510s-display-registry.h"
+
+extern void displays_gui_init(GtkBuilder *builder);
 
 
 GtkCheckMenuItem *menuhidden;
@@ -56,15 +59,20 @@ static gboolean check_leaving_cb(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-static gboolean indicator_activate_cb(gpointer data) {
-  (void)data;
-  log_ms("app_indicator_set_status (deferred)...");
+
+/* Called asynchronously by GLib when org.kde.StatusNotifierWatcher appears
+ * on the session bus.  At that point dbusmenu can sync without blocking, so
+ * all AppIndicator/menu-item D-Bus calls here are near-instant.           */
+static void on_sni_watcher_appeared(GDBusConnection *conn, const gchar *name,
+                                    const gchar *owner, gpointer data) {
+  (void)conn; (void)name; (void)owner; (void)data;
+  log_ms("SNI watcher appeared — activating indicator");
+  gtk_check_menu_item_set_active(menuhidden, g510s_data.gui_hidden ? TRUE : FALSE);
   if (device_found)
     app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
   else
     app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ATTENTION);
-  log_ms("app_indicator_set_status done");
-  return G_SOURCE_REMOVE;
+  log_ms("indicator activated");
 }
 
 static void sigchld_handler(int sig) {
@@ -291,6 +299,8 @@ int main(int argc, char *argv[]) {
   load_config();
   log_ms("config loaded");
 
+  display_registry_init();
+
   // load on-demand screen definitions from ~/.g510s/screens.conf
   signal(SIGCHLD, sigchld_handler);
   signal(SIGTERM, sigterm_handler);
@@ -428,7 +438,12 @@ int main(int argc, char *argv[]) {
   app_indicator_set_menu(indicator, GTK_MENU(indicator_menu));
   log_ms("app_indicator_set_menu done");
 
+  log_ms("gtk_builder_connect_signals...");
   gtk_builder_connect_signals(builder, NULL);
+  log_ms("gtk_builder_connect_signals done");
+  log_ms("displays_gui_init...");
+  displays_gui_init(builder);
+  log_ms("displays_gui_init done");
   g_object_unref(G_OBJECT(builder));
   
   // set program version
@@ -527,28 +542,22 @@ int main(int argc, char *argv[]) {
   gtk_entry_set_text(entry_mrg16, g510s_data.mr.g16);
   gtk_entry_set_text(entry_mrg17, g510s_data.mr.g17);
   gtk_entry_set_text(entry_mrg18, g510s_data.mr.g18);
-  
-  // set whether we want to hide the window
-  if (g510s_data.gui_hidden) {
+  log_ms("widgets populated");
+
+  log_ms("gtk_widget_hide/show...");
+  if (g510s_data.gui_hidden)
     gtk_widget_hide(window);
-    gtk_check_menu_item_set_active(menuhidden, TRUE);
-  } else {
+  else
     gtk_widget_show(window);
-    gtk_check_menu_item_set_active(menuhidden, FALSE);
-  }
-  
-  // now we're ready to update the keyboard
-  if (device_found)
-    set_mkey_state(g510s_data.mkey_state);
+  log_ms("gtk_widget_hide/show done");
 
-  // Defer app_indicator_set_status into the GLib event loop — on first start
-  // after login it blocks ~13s waiting for the SNI watcher D-Bus service to
-  // activate; deferring lets gtk_main() enter immediately so signal handlers
-  // work and the tray icon appears asynchronously once the watcher is ready.
-  g_idle_add(indicator_activate_cb, NULL);
+  /* set_mkey_state is called from key_function thread at startup —
+   * see g510s-threads.c.  SNI watcher is async via g_bus_watch_name. */
+  g_bus_watch_name(G_BUS_TYPE_SESSION,
+                   "org.kde.StatusNotifierWatcher",
+                   G_BUS_NAME_WATCHER_FLAGS_AUTO_START,
+                   on_sni_watcher_appeared, NULL, NULL, NULL);
 
-  // idle callback catches the rare race where SIGINT arrives between
-  // sigterm_handler setting leaving=1 and gtk_main() entering its loop.
   g_idle_add(check_leaving_cb, NULL);
 
   log_ms("ready — entering gtk_main");

@@ -8,17 +8,17 @@ export PKG_CONFIG_PATH
 
 default: g510s
 
-g510s.o: g510s.c g510s.h
+g510s.o: g510s.c g510s.h g510s-display-registry.h
 	$(CC) $(CFLAGS) -fcommon -Wall -DG510S_DATA_DIR=\"$(DATA_DIR)\" `pkg-config --cflags gtk+-3.0 appindicator3-0.1` -c g510s.c -o g510s.o
 
 g510s-clock.o: g510s-clock.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-clock.c -o g510s-clock.o
 
 g510s-cpu.o: g510s-cpu.c g510s.h
-	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-cpu.c -o g510s-cpu.o
+	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-cpu.c -o g510s-cpu.o
 
 g510s-sysmon.o: g510s-sysmon.c g510s.h
-	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-sysmon.c -o g510s-sysmon.o
+	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-sysmon.c -o g510s-sysmon.o
 
 g510s-claude-lcd.o: g510s-claude-lcd.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-claude-lcd.c -o g510s-claude-lcd.o
@@ -26,8 +26,8 @@ g510s-claude-lcd.o: g510s-claude-lcd.c g510s.h
 g510s-config.o: g510s-config.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-config.c -o g510s-config.o
 
-g510s-keys.o: g510s-keys.c g510s.h
-	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-keys.c -o g510s-keys.o
+g510s-keys.o: g510s-keys.c g510s.h g510s-display-registry.h
+	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-keys.c -o g510s-keys.o
 
 g510s-list.o: g510s-list.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-list.c -o g510s-list.o
@@ -38,14 +38,20 @@ g510s-misc.o: g510s-misc.c g510s.h
 g510s-net.o: g510s-net.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-net.c -o g510s-net.o
 
+g510s-display-registry.o: g510s-display-registry.c g510s-display-registry.h g510s.h
+	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-display-registry.c -o g510s-display-registry.o
+
+g510s-displays-gui.o: g510s-displays-gui.c g510s-display-registry.h g510s.h
+	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-displays-gui.c -o g510s-displays-gui.o
+
 g510s-signals.o: g510s-signals.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags gtk+-3.0` -c g510s-signals.c -o g510s-signals.o
 
-g510s-threads.o: g510s-threads.c g510s.h
+g510s-threads.o: g510s-threads.c g510s.h g510s-display-registry.h
 	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags appindicator3-0.1` -c g510s-threads.c -o g510s-threads.o
 
-g510s: g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o
-	$(CC) $(CFLAGS) -fcommon -Wall g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o -o g510s -lg15 -lg15render -lpthread -rdynamic `pkg-config --libs gtk+-3.0 appindicator3-0.1`
+g510s: g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o
+	$(CC) $(CFLAGS) -fcommon -Wall g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o -o g510s -lg15 -lg15render -lpthread -rdynamic `pkg-config --libs gtk+-3.0 appindicator3-0.1`
 
 install:
 	-mkdir -p /usr/local/share/g510s
@@ -79,3 +85,5 @@ clean:
 	-rm -f g510s-net.o
 	-rm -f g510s-signals.o
 	-rm -f g510s-threads.o
+	-rm -f g510s-display-registry.o
+	-rm -f g510s-displays-gui.o

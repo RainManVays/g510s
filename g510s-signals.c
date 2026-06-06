@@ -30,6 +30,7 @@ extern GtkCheckMenuItem *menuhidden;
 // menubar actions
 void on_menusave_activate(GtkMenuItem *menuitem, gpointer window) {
   save_config();
+  displays_gui_save();
 }
 
 void on_menuhidden_toggled(GtkMenuItem *menuitem, gpointer user_data) {

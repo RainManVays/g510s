@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <libg15render.h>
+#include <gtk/gtk.h>
 
 #include "g510s.h"
 
@@ -177,6 +178,15 @@ static unsigned long long sm_net_tx_prev[SM_MAX_IFACES];
 static unsigned long long sm_net_rx_bps[SM_MAX_IFACES];
 static unsigned long long sm_net_tx_bps[SM_MAX_IFACES];
 
+/* Selection state — 1 = show, 0 = hide.  Written from GTK thread, read from
+ * update thread. On x86 single-int reads/writes are atomic enough for this. */
+static int sm_disk_selected[SM_MAX_DISKS];
+static int sm_iface_selected[SM_MAX_IFACES];
+static GtkWidget *sm_disk_chk[SM_MAX_DISKS];
+static GtkWidget *sm_iface_chk[SM_MAX_IFACES];
+static int sysmon_refresh_ms = 1000;
+static GtkSpinButton *sysmon_spin_refresh;
+
 static void sm_find_ifaces(void) {
     FILE *f = fopen("/proc/net/dev", "r");
     if (!f) return;
@@ -248,7 +258,7 @@ static void fmt_ram(long used_kb, long total_kb, char *buf, int size) {
 
 /* ── Shared timestamp ─────────────────────────────────────────────────── */
 
-static time_t sm_last_update = 0;
+static struct timespec sm_last_update = {0, 0};
 
 /* ── Initialization ───────────────────────────────────────────────────── */
 
@@ -273,7 +283,10 @@ void sysmon_screen_init(void) {
         sm_net_rx_bps[i] = 0;
         sm_net_tx_bps[i] = 0;
     }
-    sm_last_update = time(NULL);
+    clock_gettime(CLOCK_MONOTONIC, &sm_last_update);
+
+    for (int i = 0; i < SM_MAX_DISKS;  i++) { sm_disk_selected[i]  = 1; sm_disk_chk[i]  = NULL; }
+    for (int i = 0; i < SM_MAX_IFACES; i++) { sm_iface_selected[i] = 1; sm_iface_chk[i] = NULL; }
 }
 
 /* ── Main screen function ─────────────────────────────────────────────── */
@@ -299,12 +312,17 @@ void sysmon_screen_init(void) {
  *          x=140 tx-rate (4 ch, 19px) → ends x=158
  */
 void sysmon_screen(lcd_t *lcd) {
-    time_t now = time(NULL);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
     int new_data = 0;
 
-    if (now != sm_last_update) {
-        long dt = (sm_last_update > 0) ? (long)(now - sm_last_update) : 1;
-        if (dt <= 0) dt = 1;
+    long elapsed_ms = (now.tv_sec - sm_last_update.tv_sec) * 1000L +
+                      (now.tv_nsec - sm_last_update.tv_nsec) / 1000000L;
+
+    if (elapsed_ms >= sysmon_refresh_ms) {
+        long dt_ms = (sm_last_update.tv_sec > 0 || sm_last_update.tv_nsec > 0)
+                     ? elapsed_ms : 1000L;
+        if (dt_ms <= 0) dt_ms = 1;
         sm_last_update = now;
 
         /* CPU */
@@ -337,8 +355,8 @@ void sysmon_screen(lcd_t *lcd) {
                 if (strcmp(curr_disk[i].name, sm_disk_prev[j].name) != 0) continue;
                 unsigned long long drd = curr_disk[i].rd - sm_disk_prev[j].rd;
                 unsigned long long dwr = curr_disk[i].wr - sm_disk_prev[j].wr;
-                rd_bps = (drd * 512) / (unsigned long long)dt;
-                wr_bps = (dwr * 512) / (unsigned long long)dt;
+                rd_bps = (drd * 512 * 1000ULL) / (unsigned long long)dt_ms;
+                wr_bps = (dwr * 512 * 1000ULL) / (unsigned long long)dt_ms;
                 break;
             }
             strncpy(sm_disk_names[i], curr_disk[i].name, 15);
@@ -355,8 +373,8 @@ void sysmon_screen(lcd_t *lcd) {
         for (int i = 0; i < sm_net_n; i++) {
             long long drx = (long long)rx[i] - (long long)sm_net_rx_prev[i];
             long long dtx = (long long)tx[i] - (long long)sm_net_tx_prev[i];
-            sm_net_rx_bps[i] = (drx > 0) ? (unsigned long long)drx / (unsigned long long)dt : 0;
-            sm_net_tx_bps[i] = (dtx > 0) ? (unsigned long long)dtx / (unsigned long long)dt : 0;
+            sm_net_rx_bps[i] = (drx > 0) ? (unsigned long long)drx * 1000ULL / (unsigned long long)dt_ms : 0;
+            sm_net_tx_bps[i] = (dtx > 0) ? (unsigned long long)dtx * 1000ULL / (unsigned long long)dt_ms : 0;
             sm_net_rx_prev[i] = rx[i];
             sm_net_tx_prev[i] = tx[i];
         }
@@ -404,19 +422,31 @@ void sysmon_screen(lcd_t *lcd) {
     g15r_drawLine(canvas, 80, 17, 80,  43, G15_COLOR_BLACK);
 
     /* ── 3 data rows (MED text, 6px tall, 8px spacing) ────────────────── */
+
+    /* Build visible-disk and visible-iface index lists from selection state */
+    int vis_disk[SM_MAX_DISKS];
+    int vis_disk_n = 0;
+    for (int i = 0; i < sm_disk_n; i++)
+        if (sm_disk_selected[i]) vis_disk[vis_disk_n++] = i;
+
+    int vis_iface[SM_MAX_IFACES];
+    int vis_iface_n = 0;
+    for (int i = 0; i < sm_net_n; i++)
+        if (sm_iface_selected[i]) vis_iface[vis_iface_n++] = i;
+
     int raw_off = g510s_data.sysmon_disk_offset;
-    int offset  = (sm_disk_n > 0) ? ((raw_off % sm_disk_n) + sm_disk_n) % sm_disk_n : 0;
+    int offset  = (vis_disk_n > 0) ? ((raw_off % vis_disk_n) + vis_disk_n) % vis_disk_n : 0;
 
     for (int row = 0; row < 3; row++) {
         int y = 19 + row * 8;
 
-        /* LEFT: disk */
+        /* LEFT: disk (from visible list) */
         int idx = -1;
-        if (sm_disk_n > 0) {
-            if (sm_disk_n >= 3)
-                idx = (offset + row) % sm_disk_n;
-            else if (row < sm_disk_n)
-                idx = row;
+        if (vis_disk_n > 0) {
+            if (vis_disk_n >= 3)
+                idx = vis_disk[(offset + row) % vis_disk_n];
+            else if (row < vis_disk_n)
+                idx = vis_disk[row];
         }
 
         if (idx >= 0) {
@@ -431,16 +461,17 @@ void sysmon_screen(lcd_t *lcd) {
             g15r_renderString(canvas, (unsigned char *)buf,   0, G15_TEXT_MED, 59, y);
         }
 
-        /* RIGHT: network interface */
-        if (row < sm_net_n) {
+        /* RIGHT: network interface (from visible list) */
+        if (row < vis_iface_n) {
+            int fidx = vis_iface[row];
             char iname[6] = {0};
-            strncpy(iname, sm_net_ifaces[row], 5);
+            strncpy(iname, sm_net_ifaces[fidx], 5);
             g15r_renderString(canvas, (unsigned char *)iname, 0, G15_TEXT_MED, 82,  y);
             g15r_renderString(canvas, (unsigned char *)"v",   0, G15_TEXT_MED, 107, y);
-            fmt_rate(sm_net_rx_bps[row], buf);
+            fmt_rate(sm_net_rx_bps[fidx], buf);
             g15r_renderString(canvas, (unsigned char *)buf,   0, G15_TEXT_MED, 113, y);
             g15r_renderString(canvas, (unsigned char *)"^",   0, G15_TEXT_MED, 134, y);
-            fmt_rate(sm_net_tx_bps[row], buf);
+            fmt_rate(sm_net_tx_bps[fidx], buf);
             g15r_renderString(canvas, (unsigned char *)buf,   0, G15_TEXT_MED, 140, y);
         }
     }
@@ -451,4 +482,52 @@ void sysmon_screen(lcd_t *lcd) {
     pthread_mutex_unlock(&lcdlist_mutex);
 
     free(canvas);
+}
+
+void sysmon_create_settings(GtkBox *box) {
+    /* Refresh rate row */
+    GtkBox *row = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6));
+    gtk_box_pack_start(box, GTK_WIDGET(row), FALSE, FALSE, 0);
+    gtk_box_pack_start(row,
+            GTK_WIDGET(gtk_label_new("Refresh rate (s):")), FALSE, FALSE, 0);
+    sysmon_spin_refresh = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(1, 60, 1));
+    gtk_spin_button_set_value(sysmon_spin_refresh, sysmon_refresh_ms / 1000.0);
+    gtk_box_pack_start(row, GTK_WIDGET(sysmon_spin_refresh), FALSE, FALSE, 0);
+
+    /* Disk selection */
+    if (sm_disk_n > 0) {
+        gtk_box_pack_start(box,
+                GTK_WIDGET(gtk_label_new("Disks:")), FALSE, FALSE, 0);
+        for (int i = 0; i < sm_disk_n; i++) {
+            sm_disk_chk[i] = gtk_check_button_new_with_label(sm_disk_names[i]);
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sm_disk_chk[i]),
+                                         sm_disk_selected[i]);
+            gtk_box_pack_start(box, sm_disk_chk[i], FALSE, FALSE, 0);
+        }
+    }
+
+    /* Interface selection */
+    if (sm_net_n > 0) {
+        gtk_box_pack_start(box,
+                GTK_WIDGET(gtk_label_new("Interfaces:")), FALSE, FALSE, 0);
+        for (int i = 0; i < sm_net_n; i++) {
+            sm_iface_chk[i] = gtk_check_button_new_with_label(sm_net_ifaces[i]);
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(sm_iface_chk[i]),
+                                         sm_iface_selected[i]);
+            gtk_box_pack_start(box, sm_iface_chk[i], FALSE, FALSE, 0);
+        }
+    }
+}
+
+void sysmon_save_settings(void) {
+    if (sysmon_spin_refresh)
+        sysmon_refresh_ms = (int)(gtk_spin_button_get_value(sysmon_spin_refresh) * 1000);
+    for (int i = 0; i < sm_disk_n; i++)
+        if (sm_disk_chk[i])
+            sm_disk_selected[i] = gtk_toggle_button_get_active(
+                    GTK_TOGGLE_BUTTON(sm_disk_chk[i]));
+    for (int i = 0; i < sm_net_n; i++)
+        if (sm_iface_chk[i])
+            sm_iface_selected[i] = gtk_toggle_button_get_active(
+                    GTK_TOGGLE_BUTTON(sm_iface_chk[i]));
 }

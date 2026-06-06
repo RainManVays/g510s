@@ -23,8 +23,12 @@
 #include <time.h>
 #include <pthread.h>
 #include <libg15render.h>
+#include <gtk/gtk.h>
 
 #include "g510s.h"
+
+static int cpu_refresh_ms = 1000;
+static GtkSpinButton *cpu_spin_refresh;
 
 
 #define CPU_MAX_CORES 8
@@ -98,16 +102,20 @@ void cpu_screen_init(void) {
  *            "C0" | bar (x+11..x+62) | "XX%"
  */
 void cpu_screen(lcd_t *lcd) {
-    static time_t last_data_update = 0;
-    time_t now = time(NULL);
+    static struct timespec last_data_update = {0, 0};
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
     int new_data = 0;
 
-    /* Collect stats once per second */
-    if (now != last_data_update) {
+    long elapsed_ms = (now.tv_sec - last_data_update.tv_sec) * 1000L +
+                      (now.tv_nsec - last_data_update.tv_nsec) / 1000000L;
+
+    if (elapsed_ms >= cpu_refresh_ms) {
         cpu_stat_t curr[CPU_MAX_CORES + 1];
         int cores = read_cpu_stats(curr, CPU_MAX_CORES);
         if (cores >= 0) {
             last_data_update = now;
+
             if (!cpu_initialized) {
                 memcpy(cpu_prev, curr, sizeof(cpu_stat_t) * (cores + 1));
                 cpu_n_cores = cores;
@@ -169,4 +177,19 @@ void cpu_screen(lcd_t *lcd) {
     pthread_mutex_unlock(&lcdlist_mutex);
 
     free(canvas);
+}
+
+void cpu_create_settings(GtkBox *box) {
+    GtkBox *row = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6));
+    gtk_box_pack_start(box, GTK_WIDGET(row), FALSE, FALSE, 0);
+    gtk_box_pack_start(row,
+            GTK_WIDGET(gtk_label_new("Refresh rate (s):")), FALSE, FALSE, 0);
+    cpu_spin_refresh = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(1, 60, 1));
+    gtk_spin_button_set_value(cpu_spin_refresh, cpu_refresh_ms / 1000.0);
+    gtk_box_pack_start(row, GTK_WIDGET(cpu_spin_refresh), FALSE, FALSE, 0);
+}
+
+void cpu_save_settings(void) {
+    if (cpu_spin_refresh)
+        cpu_refresh_ms = (int)(gtk_spin_button_get_value(cpu_spin_refresh) * 1000);
 }

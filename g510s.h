@@ -19,6 +19,8 @@
  */
 
 
+#include <sys/types.h>
+
 #define G510S_VERSION "0.0.3"
 
 #ifndef SO_PRIORITY
@@ -29,6 +31,7 @@
 #define LISTEN_PORT 15550
 
 #define MAX_CLIENTS 10
+#define MAX_SCREENS 16
 
 #define CLIENT_CMD_GET_KEYSTATE 'k'
 #define CLIENT_CMD_SWITCH_PRIORITIES 'p'
@@ -73,7 +76,8 @@ struct lcdlist_s {
   lcdnode_t *current;
 } lcdlist_s;
 
-//pthread_mutex_t lcdlist_mutex;
+pthread_mutex_t lcdlist_mutex;
+pthread_mutex_t libg15_mutex;
 
 struct m_data_s {
   int red;
@@ -108,24 +112,47 @@ struct g510s_data_s {
   struct m_data_s mr;
   int clock_mode;
   int show_date;
+  int internal_screen;     /* 0=clock, 1=cpu, 2=sysmon, 3=claude */
+  int sysmon_disk_offset;  /* disk page offset for sysmon (L2/L3) */
 } g510s_data;
 
-int leaving;
-int update;
-int device_found;
-unsigned int connected_clients;
-unsigned int current_key_state;
+volatile int leaving;
+volatile int update;
+volatile int device_found;
+volatile unsigned int connected_clients;
+volatile unsigned int current_key_state;
+
+typedef struct {
+  char name[64];
+  char cmd[512];
+  pid_t pid;
+} screen_t;
+
+screen_t managed_screens[MAX_SCREENS];
+int num_managed_screens;
+volatile int current_screen_idx;
+volatile int pending_foreground;
 
 int init_uinput();
 void exit_uinput();
 void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_state);
 
 void digital_clock(lcd_t *lcd);
+void cpu_screen_init(void);
+void cpu_screen(lcd_t *lcd);
+void sysmon_screen_init(void);
+void sysmon_screen(lcd_t *lcd);
+void claude_screen_init(void);
+void claude_maybe_scan(void);
+void claude_screen(lcd_t *lcd);
 
+void acquire_pidfile();
+void release_pidfile();
 void init_data();
 int check_dir();
 int load_config();
 int save_config();
+void load_screens();
 
 lcdlist_t *lcdlist_init();
 lcdnode_t *lcdnode_add(lcdlist_t **display_list);

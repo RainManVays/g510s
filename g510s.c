@@ -20,6 +20,13 @@
 
 
 #include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <sys/wait.h>
 #include <pthread.h>
 #include <libg15.h>
 #include <libg15render.h>
@@ -31,6 +38,46 @@
 
 GtkCheckMenuItem *menuhidden;
 AppIndicator *indicator;
+
+static struct timespec _t0;
+
+static void log_ms(const char *msg) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  long ms = (now.tv_sec - _t0.tv_sec) * 1000
+           + (now.tv_nsec - _t0.tv_nsec) / 1000000;
+  printf("G510s: [+%4ldms] %s\n", ms, msg);
+  fflush(stdout);
+}
+
+static gboolean check_leaving_cb(gpointer data) {
+  (void)data;
+  if (leaving) gtk_main_quit();
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean indicator_activate_cb(gpointer data) {
+  (void)data;
+  log_ms("app_indicator_set_status (deferred)...");
+  if (device_found)
+    app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+  else
+    app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ATTENTION);
+  log_ms("app_indicator_set_status done");
+  return G_SOURCE_REMOVE;
+}
+
+static void sigchld_handler(int sig) {
+  (void)sig;
+  while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+static void sigterm_handler(int sig) {
+  (void)sig;
+  leaving = 1;
+  if (gtk_main_level() > 0)
+    gtk_main_quit();
+}
 
 int main(int argc, char *argv[]) {
   int i = 1;
@@ -147,7 +194,7 @@ int main(int argc, char *argv[]) {
   device_found = 0;
   connected_clients = 0;
   current_key_state = 0;
-  
+
   // parse command line options
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i],"--help") || !strcmp(argv[i],"-h")) {
@@ -186,24 +233,40 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
+  clock_gettime(CLOCK_MONOTONIC, &_t0);
+  log_ms("start");
+
   // enable debug
   if (debug != 0) {
     libg15Debug(debug);
     printf("G510s: debugging enabled, level %i\n", debug);
   }
   
-  // init libg15
-  if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) { // g510/g510s no audio
-    printf("G510s: found device 046d:c22d\n");
-    device_found = 1;
-  } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) { // g510/g510s with audio
-    printf("G510s: found device 046d:c22e\n");
-    device_found = 1;
-  } else {
-    printf("G510s: failed to initialize libg15\n");
-    device_found = 0;
+  // init libg15 early (before gtk_init), so hotplug detection in key_thread
+  // can simply call re_initLibG15() without racing against the initial open.
+  log_ms("libg15 init...");
+  {
+    int tries = 30;  // up to 3 seconds
+    while (tries-- > 0 && !device_found) {
+      if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
+        printf("G510s: [main] found device 046d:c22d\n");
+        device_found = 1;
+      } else {
+        exitLibG15();
+        if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
+          printf("G510s: [main] found device 046d:c22e\n");
+          device_found = 1;
+        } else {
+          exitLibG15();
+          if (tries > 0) usleep(100000);
+        }
+      }
+    }
+    if (!device_found)
+      printf("G510s: failed to initialize libg15\n");
   }
-  
+  log_ms("libg15 done");
+
   // init uinput only if a device is found
   if (device_found) {
     // media keys wont work without uinput
@@ -211,32 +274,50 @@ int main(int argc, char *argv[]) {
       printf("G510s: failed to initialize uinput, media keys not available\n");
     }
   }
-  
+
   // init data structure
   init_data();
-  
+
   // init lcd list
   lcdlist = lcdlist_init();
-  
+
   // try to create user save directory
   check_dir();
-  
+
+  // kill any previous instance and claim the pid file
+  acquire_pidfile();
+
   // try to load previously saved data
   load_config();
-  
+  log_ms("config loaded");
+
+  // load on-demand screen definitions from ~/.g510s/screens.conf
+  signal(SIGCHLD, sigchld_handler);
+  signal(SIGTERM, sigterm_handler);
+  signal(SIGINT,  sigterm_handler);
+  signal(SIGHUP,  sigterm_handler);
+  load_screens();
+
+  log_ms("screen init...");
+  cpu_screen_init();
+  sysmon_screen_init();
+  claude_screen_init();
+  log_ms("screen init done");
+
   // start threads
   pthread_create(&server_thread, NULL, server_function, lcdlist);
   pthread_create(&update_thread, NULL, update_function, lcdlist);
   pthread_create(&key_thread, NULL, key_function, lcdlist);
-  //pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-  //pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-  
+  log_ms("threads started");
+
   // init gtk
+  log_ms("gtk_init...");
   gtk_init(&argc, &argv);
-  
+  log_ms("gtk_init done");
+
   builder = gtk_builder_new();
-  // FIXME: hardcode to installed path
-  gtk_builder_add_from_file(builder, "/usr/local/share/g510s/g510s.glade", NULL);
+  gtk_builder_add_from_file(builder, G510S_DATA_DIR "/g510s.glade", NULL);
+  log_ms("glade loaded");
   
   window = GTK_WIDGET(gtk_builder_get_object(builder, "window"));
   aboutdialog = GTK_ABOUT_DIALOG(gtk_builder_get_object(builder, "aboutdialog"));
@@ -338,13 +419,15 @@ int main(int argc, char *argv[]) {
   menuhidden = GTK_CHECK_MENU_ITEM(gtk_builder_get_object(builder, "menuhidden"));
   
   // indicator
+  log_ms("app_indicator_new...");
   indicator_menu = GTK_WIDGET(gtk_builder_get_object(builder, "indicator_menu"));
-  // FIXME: hardcode to installed path
-  indicator = app_indicator_new("G510s", "/usr/local/share/g510s/g510s.svg", APP_INDICATOR_CATEGORY_HARDWARE);
-  // FIXME: hardcode to installed path
-  app_indicator_set_attention_icon(indicator, "/usr/local/share/g510s/g510s-alert.svg");
+  indicator = app_indicator_new("G510s", G510S_DATA_DIR "/g510s.svg", APP_INDICATOR_CATEGORY_HARDWARE);
+  log_ms("app_indicator_new done");
+  app_indicator_set_attention_icon(indicator, G510S_DATA_DIR "/g510s-alert.svg");
+  log_ms("app_indicator_set_menu...");
   app_indicator_set_menu(indicator, GTK_MENU(indicator_menu));
-  
+  log_ms("app_indicator_set_menu done");
+
   gtk_builder_connect_signals(builder, NULL);
   g_object_unref(G_OBJECT(builder));
   
@@ -455,24 +538,49 @@ int main(int argc, char *argv[]) {
   }
   
   // now we're ready to update the keyboard
-  if (device_found) {
+  if (device_found)
     set_mkey_state(g510s_data.mkey_state);
-    app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
-  } else {
-    app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ATTENTION);
-  }
-  
+
+  // Defer app_indicator_set_status into the GLib event loop — on first start
+  // after login it blocks ~13s waiting for the SNI watcher D-Bus service to
+  // activate; deferring lets gtk_main() enter immediately so signal handlers
+  // work and the tray icon appears asynchronously once the watcher is ready.
+  g_idle_add(indicator_activate_cb, NULL);
+
+  // idle callback catches the rare race where SIGINT arrives between
+  // sigterm_handler setting leaving=1 and gtk_main() entering its loop.
+  g_idle_add(check_leaving_cb, NULL);
+
+  log_ms("ready — entering gtk_main");
   gtk_main();
-  
+
   // notify threads to exit
+  log_ms("gtk_main returned — shutting down");
   leaving = 1;
-  
-  // key_thread needs to be canceled
-  //pthread_cancel(key_thread);
-  
+
+  // key_thread and update_thread both check !leaving and exit within
+  // 100ms/50ms respectively — pthread_cancel is avoided because it can
+  // fire inside a libusb transfer, corrupting device state before the
+  // cleanup code below calls writePixmapToLCD/exitLibG15.
+  log_ms("joining threads...");
+  pthread_join(key_thread, NULL);
+  pthread_join(update_thread, NULL);
+  pthread_cancel(server_thread);
+  pthread_join(server_thread, NULL);
+  log_ms("threads joined");
+
+  // kill any managed screen processes
+  for (int si = 0; si < num_managed_screens; si++) {
+    if (managed_screens[si].pid > 0) {
+      kill(managed_screens[si].pid, SIGTERM);
+      managed_screens[si].pid = 0;
+    }
+  }
+
   // save data before leaving
   save_config();
-  
+  log_ms("config saved");
+
   // close gracefully
   if (device_found) {
     // clear the screen
@@ -487,7 +595,7 @@ int main(int argc, char *argv[]) {
       }
       free(canvas);
     }
-    
+
     // shut off the lights
     if (setLEDs(0) < 0) {
       printf("G510s: failed to clear leds\n");
@@ -495,16 +603,21 @@ int main(int argc, char *argv[]) {
     if (setG510LEDColor(0, 0, 0) < 0) {
       printf("G510s: failed to clear color\n");
     }
-    
+
     // close uinput
     exit_uinput();
-    
-    // close libg15
+
+    // close libg15 (exitLibG15 re-attaches the kernel driver via libusb_attach_kernel_driver)
+    log_ms("exitLibG15...");
     exitLibG15();
+    log_ms("exitLibG15 done");
   }
-  
+
   // clean up lcdlist
   lcdlist_destroy(&lcdlist);
-  
+
+  release_pidfile();
+  log_ms("done");
+
   return 0;
 }

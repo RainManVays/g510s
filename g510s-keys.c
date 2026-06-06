@@ -24,6 +24,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <pthread.h>
@@ -215,26 +216,71 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
    */
   
   if ((key & G15_KEY_L1) && !(key_state & G15_KEY_L1)) {
-    //pthread_mutex_lock(&lcdlist_mutex);
-    if (displaylist->tail == displaylist->current) {
-      displaylist->current = displaylist->head;
+    if (num_managed_screens == 0) {
+      if (displaylist->head == displaylist->tail) {
+        // No TCP clients: cycle internal screen (clock → cpu → sysmon → claude → clock)
+        g510s_data.internal_screen = (g510s_data.internal_screen + 1) % 4;
+        displaylist->current->lcd->ident = 0;
+      } else {
+        // Cycle through connected lcdlist clients
+        pthread_mutex_lock(&lcdlist_mutex);
+        if (displaylist->tail == displaylist->current) {
+          displaylist->current = displaylist->head;
+        } else {
+          displaylist->current = displaylist->current->prev;
+        }
+        displaylist->current->lcd->usr_foreground = 1;
+        displaylist->current->lcd->state_changed = 1;
+        displaylist->current->last_priority = displaylist->current;
+        pthread_mutex_unlock(&lcdlist_mutex);
+      }
     } else {
-      displaylist->current = displaylist->current->prev;
+      // managed screens: kill current process, advance, spawn next
+      if (current_screen_idx >= 0 &&
+          managed_screens[current_screen_idx].pid > 0) {
+        kill(managed_screens[current_screen_idx].pid, SIGTERM);
+        managed_screens[current_screen_idx].pid = 0;
+      }
+
+      current_screen_idx++;
+      if (current_screen_idx >= num_managed_screens)
+        current_screen_idx = -1;
+
+      // while new screen loads, show the clock
+      pthread_mutex_lock(&lcdlist_mutex);
+      displaylist->current = displaylist->tail;
+      displaylist->tail->lcd->ident = 0;
+      pthread_mutex_unlock(&lcdlist_mutex);
+
+      if (current_screen_idx >= 0) {
+        pending_foreground = 1;
+        pid_t pid = fork();
+        if (pid == 0) {
+          setsid();
+          execl("/bin/sh", "sh", "-c",
+                managed_screens[current_screen_idx].cmd, NULL);
+          _exit(1);
+        } else if (pid > 0) {
+          managed_screens[current_screen_idx].pid = pid;
+          printf("G510s: launched screen \"%s\" (pid %d)\n",
+                 managed_screens[current_screen_idx].name, pid);
+        } else {
+          pending_foreground = 0;
+          printf("G510s: fork failed for screen \"%s\"\n",
+                 managed_screens[current_screen_idx].name);
+        }
+      }
     }
-    displaylist->current->lcd->usr_foreground = 1;
-    displaylist->current->lcd->state_changed = 1;
-    displaylist->current->last_priority = displaylist->current;
-    //pthread_mutex_unlock(&lcdlist_mutex);
   }
   if (!(key & G15_KEY_L1) && (key_state & G15_KEY_L1)) {
     
   }
   if ((key & G15_KEY_L2) && !(key_state & G15_KEY_L2)) {
     if (displaylist->tail == displaylist->current) {
-      if (!g510s_data.clock_mode) {
-        g510s_data.clock_mode = 1;
+      if (g510s_data.internal_screen == 2) {
+        g510s_data.sysmon_disk_offset--;
       } else {
-        g510s_data.clock_mode = 0;
+        g510s_data.clock_mode = !g510s_data.clock_mode;
       }
       displaylist->current->lcd->ident = 0;
     } else {
@@ -248,10 +294,10 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
   }
   if ((key & G15_KEY_L3) && !(key_state & G15_KEY_L3)) {
     if (displaylist->tail == displaylist->current) {
-      if (!g510s_data.show_date) {
-        g510s_data.show_date = 1;
-      } else {
-        g510s_data.show_date = 0;
+      if (g510s_data.internal_screen == 2) {
+        g510s_data.sysmon_disk_offset++;
+      } else if (g510s_data.internal_screen == 0) {
+        g510s_data.show_date = !g510s_data.show_date;
       }
       displaylist->current->lcd->ident = 0;
     } else {

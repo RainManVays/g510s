@@ -22,6 +22,8 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <pthread.h>
 #include <libg15.h>
 
 #include "g510s.h"
@@ -69,22 +71,30 @@ void set_mkey_state(int state) {
     case 1:
       g510s_data.mkey_state = state;
       update = g510s_data.mkey_state;
+      pthread_mutex_lock(&libg15_mutex);
       setLEDs(G15_LED_M1 -0x20);
+      pthread_mutex_unlock(&libg15_mutex);
       break;
     case 2:
       g510s_data.mkey_state = state;
       update = g510s_data.mkey_state;
+      pthread_mutex_lock(&libg15_mutex);
       setLEDs(G15_LED_M2 -0x20);
+      pthread_mutex_unlock(&libg15_mutex);
       break;
     case 3:
       g510s_data.mkey_state = state;
       update = g510s_data.mkey_state;
+      pthread_mutex_lock(&libg15_mutex);
       setLEDs(G15_LED_M3 -0x20);
+      pthread_mutex_unlock(&libg15_mutex);
       break;
     case 4:
       g510s_data.mkey_state = state;
       update = g510s_data.mkey_state;
+      pthread_mutex_lock(&libg15_mutex);
       setLEDs(G15_LED_MR -0x20);
+      pthread_mutex_unlock(&libg15_mutex);
       break;
     default:
       printf("G510s: invalid mkey!!\n");
@@ -109,11 +119,13 @@ void set_color() {
       mkey = &g510s_data.mr;
       break;
     default:
-      printf("G510s: invalide mkey!!\n");
+      printf("G510s: invalid mkey!!\n");
       return;
   }
   
+  pthread_mutex_lock(&libg15_mutex);
   setG510LEDColor(mkey->red, mkey->green, mkey->blue);
+  pthread_mutex_unlock(&libg15_mutex);
 }
 
 void run_gkey_cmd(int gkey) {
@@ -198,5 +210,14 @@ void run_gkey_cmd(int gkey) {
       return;
   }
   
-  system(cmd);
+  if (cmd[0] == '\0')
+    return;
+  pid_t pid = fork();
+  if (pid == 0) {
+    setsid();
+    execl("/bin/sh", "sh", "-c", cmd, NULL);
+    _exit(1);
+  } else if (pid < 0) {
+    printf("G510s: fork failed for gkey %d\n", gkey);
+  }
 }

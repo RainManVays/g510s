@@ -46,10 +46,10 @@ void quit_lcd(lcd_t * lcd) {
 lcdlist_t *lcdlist_init() {
   lcdlist_t *displaylist = NULL;
   
-  //pthread_mutex_init(&lcdlist_mutex, NULL);
-  //pthread_mutex_lock(&lcdlist_mutex);
-  
-  displaylist = malloc(sizeof(lcdnode_t));
+  pthread_mutex_init(&lcdlist_mutex, NULL);
+  pthread_mutex_lock(&lcdlist_mutex);
+
+  displaylist = malloc(sizeof(lcdlist_t));
   
   displaylist->head = malloc(sizeof(lcdnode_t));
   
@@ -63,16 +63,16 @@ lcdlist_t *lcdlist_init() {
   displaylist->head->next = displaylist->head;
   displaylist->head->list = displaylist;
   
-  //pthread_mutex_unlock(&lcdlist_mutex);
-  
+  pthread_mutex_unlock(&lcdlist_mutex);
+
   return displaylist;
 }
 
 lcdnode_t *lcdnode_add(lcdlist_t **display_list) {
   lcdnode_t *new = NULL;
   
-  //pthread_mutex_lock(&lcdlist_mutex);
-  
+  pthread_mutex_lock(&lcdlist_mutex);
+
   new = malloc(sizeof(lcdnode_t));
   new->prev = (*display_list)->head;
   new->next = (*display_list)->tail;
@@ -85,8 +85,8 @@ lcdnode_t *lcdnode_add(lcdlist_t **display_list) {
   (*display_list)->head = new;
   (*display_list)->head->list = *display_list;
   
-  //pthread_mutex_unlock(&lcdlist_mutex);
-  
+  pthread_mutex_unlock(&lcdlist_mutex);
+
   return new;
 }
 
@@ -95,8 +95,8 @@ void lcdnode_remove(lcdnode_t *oldnode) {
   lcdnode_t **prev = NULL;
   lcdnode_t **next = NULL;
   
-  //pthread_mutex_lock(&lcdlist_mutex);
-  
+  pthread_mutex_lock(&lcdlist_mutex);
+
   display_list = &oldnode->list;
   prev = &oldnode->prev;
   next = &oldnode->next;
@@ -121,8 +121,8 @@ void lcdnode_remove(lcdnode_t *oldnode) {
   }
   
   free(oldnode);
-  
-  //pthread_mutex_unlock(&lcdlist_mutex);
+
+  pthread_mutex_unlock(&lcdlist_mutex);
 }
 
 void lcdlist_destroy(lcdlist_t **displaylist) {
@@ -136,6 +136,6 @@ void lcdlist_destroy(lcdlist_t **displaylist) {
   free((*displaylist)->tail->lcd);
   free((*displaylist)->tail);
   free(*displaylist);
-  
-  //pthread_mutex_destroy(&lcdlist_mutex);
+
+  pthread_mutex_destroy(&lcdlist_mutex);
 }

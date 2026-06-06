@@ -23,12 +23,73 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <ctype.h>
 
 #include "g510s.h"
 
+
+static void get_pidfile_path(char *buf, size_t size) {
+  const char *home = getenv("HOME");
+  if (home)
+    snprintf(buf, size, "%s/.g510s/g510s.pid", home);
+  else
+    snprintf(buf, size, "/tmp/g510s.pid");
+}
+
+void acquire_pidfile() {
+  char path[512];
+  get_pidfile_path(path, sizeof(path));
+
+  FILE *f = fopen(path, "r");
+  if (f) {
+    pid_t old_pid = 0;
+    fscanf(f, "%d", &old_pid);
+    fclose(f);
+
+    if (old_pid > 0 && kill(old_pid, 0) == 0) {
+      printf("G510s: stopping previous instance (pid %d)\n", old_pid);
+      kill(old_pid, SIGTERM);
+      int waited = 0;
+      while (waited < 20 && kill(old_pid, 0) == 0) {
+        usleep(100000);
+        waited++;
+      }
+      if (kill(old_pid, 0) == 0) {
+        printf("G510s: previous instance did not exit, sending SIGKILL\n");
+        kill(old_pid, SIGKILL);
+      }
+    }
+    /* give the kernel time to release the USB device */
+    usleep(500000);
+  }
+
+  f = fopen(path, "w");
+  if (f) {
+    fprintf(f, "%d\n", (int)getpid());
+    fclose(f);
+  } else {
+    printf("G510s: warning: could not write pidfile %s\n", path);
+  }
+}
+
+void release_pidfile() {
+  char path[512];
+  get_pidfile_path(path, sizeof(path));
+
+  /* only remove if it's ours */
+  FILE *f = fopen(path, "r");
+  if (f) {
+    pid_t stored = 0;
+    fscanf(f, "%d", &stored);
+    fclose(f);
+    if (stored == getpid())
+      remove(path);
+  }
+}
 
 void init_data() {
   // gui
@@ -131,6 +192,8 @@ void init_data() {
   // clock settings
   g510s_data.clock_mode = 0;
   g510s_data.show_date = 1;
+  g510s_data.internal_screen    = 0;
+  g510s_data.sysmon_disk_offset = 0;
 }
 
 int check_dir() {
@@ -138,28 +201,31 @@ int check_dir() {
   char g510s_dir[] = "/.g510s";
   char *full_path;
   DIR *dir;
-  
-  strncpy(home_path, getenv("HOME"), sizeof(home_path));
-  
-  if (home_path == NULL) {
+  const char *home_env;
+
+  home_env = getenv("HOME");
+  if (home_env == NULL) {
     printf("G510s: failed to find $HOME directory, using default settings\n");
     return -1;
   }
-  
+  strncpy(home_path, home_env, sizeof(home_path) - 1);
+  home_path[sizeof(home_path) - 1] = '\0';
+
   full_path = malloc(sizeof(home_path) + sizeof(g510s_dir) + 1);
-  strncpy(full_path, home_path, sizeof(home_path));
-  strncat(full_path, g510s_dir, sizeof(g510s_dir));
-  
+  snprintf(full_path, sizeof(home_path) + sizeof(g510s_dir) + 1, "%s%s", home_path, g510s_dir);
+
   if ((dir = opendir(full_path)) == NULL) {
     if (mkdir(full_path, 0777) == -1) {
       printf("G510s: failed to create directory $HOME/.g510s\n");
       free(full_path);
       return -1;
     }
+  } else {
+    closedir(dir);
   }
-  
+
   free(full_path);
-  
+
   return 0;
 }
 
@@ -168,17 +234,18 @@ int load_config() {
   char file_name[] = "/.g510s/g510s.dat";
   char *full_path;
   FILE *file;
-  
-  strncpy(home_path, getenv("HOME"), sizeof(home_path));
-  
-  if (home_path == NULL) {
+  const char *home_env;
+
+  home_env = getenv("HOME");
+  if (home_env == NULL) {
     printf("G510s: failed to find $HOME directory, using default settings\n");
     return -1;
   }
+  strncpy(home_path, home_env, sizeof(home_path) - 1);
+  home_path[sizeof(home_path) - 1] = '\0';
   
   full_path = malloc(sizeof(home_path) + sizeof(file_name) + 1);
-  strncpy(full_path, home_path, sizeof(home_path));
-  strncat(full_path, file_name, sizeof(file_name));
+  snprintf(full_path, sizeof(home_path) + sizeof(file_name) + 1, "%s%s", home_path, file_name);
   
   if ((file = fopen(full_path, "rb")) == NULL) {
     printf("G510s: failed to read save file, using default settings\n");
@@ -194,22 +261,81 @@ int load_config() {
   return 0;
 }
 
+void load_screens() {
+  char home_path[255];
+  const char *file_name = "/.g510s/screens.conf";
+  char full_path[512];
+  FILE *file;
+  const char *home_env;
+  char line[640];
+
+  num_managed_screens = 0;
+  current_screen_idx = -1;
+  pending_foreground = 0;
+
+  home_env = getenv("HOME");
+  if (home_env == NULL) return;
+
+  strncpy(home_path, home_env, sizeof(home_path) - 1);
+  home_path[sizeof(home_path) - 1] = '\0';
+  snprintf(full_path, sizeof(full_path), "%s%s", home_path, file_name);
+
+  file = fopen(full_path, "r");
+  if (!file) return;
+
+  while (fgets(line, sizeof(line), file) && num_managed_screens < MAX_SCREENS) {
+    char *nl = strchr(line, '\n');
+    if (nl) *nl = '\0';
+
+    char *p = line;
+    while (isspace((unsigned char)*p)) p++;
+    if (*p == '\0' || *p == '#') continue;
+
+    char *eq = strchr(p, '=');
+    if (!eq) continue;
+
+    *eq = '\0';
+    char *name = p;
+    char *cmd = eq + 1;
+
+    char *end = name + strlen(name) - 1;
+    while (end >= name && isspace((unsigned char)*end)) { *end = '\0'; end--; }
+
+    while (isspace((unsigned char)*cmd)) cmd++;
+
+    if (*name == '\0' || *cmd == '\0') continue;
+
+    strncpy(managed_screens[num_managed_screens].name, name,
+            sizeof(managed_screens[0].name) - 1);
+    strncpy(managed_screens[num_managed_screens].cmd, cmd,
+            sizeof(managed_screens[0].cmd) - 1);
+    managed_screens[num_managed_screens].pid = 0;
+    num_managed_screens++;
+    printf("G510s: screen[%d] \"%s\" = %s\n",
+           num_managed_screens - 1, name, cmd);
+  }
+
+  fclose(file);
+  printf("G510s: loaded %d managed screen(s)\n", num_managed_screens);
+}
+
 int save_config() {
   char home_path[255];
   char file_name[] = "/.g510s/g510s.dat";
   char *full_path;
   FILE *file;
-  
-  strncpy(home_path, getenv("HOME"), sizeof(home_path));
-  
-  if (home_path == NULL) {
+  const char *home_env;
+
+  home_env = getenv("HOME");
+  if (home_env == NULL) {
     printf("G510s: failed to find $HOME directory, skipping save\n");
     return -1;
   }
+  strncpy(home_path, home_env, sizeof(home_path) - 1);
+  home_path[sizeof(home_path) - 1] = '\0';
   
   full_path = malloc(sizeof(home_path) + sizeof(file_name) + 1);
-  strncpy(full_path, home_path, sizeof(home_path));
-  strncat(full_path, file_name, sizeof(file_name));
+  snprintf(full_path, sizeof(home_path) + sizeof(file_name) + 1, "%s%s", home_path, file_name);
   
   if ((file = fopen(full_path, "wb")) == NULL) {
     printf("G510s: failed to write save file\n");

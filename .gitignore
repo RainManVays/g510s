@@ -1,0 +1,23 @@
+# Compiled objects and binary
+*.o
+/g510s
+
+# Build artifacts
+.compat/
+
+# Autotools build artifacts (if libs are ever built in-tree)
+autom4te.cache/
+config.log
+config.status
+config.cache
+stamp-h1
+.deps/
+.libs/
+
+# IDE / local tooling
+.claude/
+
+# Internal planning docs
+calc_plan.md
+handoff.md
+Inappropriate

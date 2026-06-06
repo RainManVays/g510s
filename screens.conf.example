@@ -1,0 +1,21 @@
+# ~/.g510s/screens.conf
+# Экраны, которые запускаются по кнопке L1.
+#
+# Формат:
+#   name = command
+#
+# L1 циклически переключает: [часы] → [screen0] → [screen1] → ... → [часы]
+# При переключении предыдущий процесс убивается (SIGTERM),
+# новый запускается и сразу выводится на LCD.
+#
+# Требования к клиенту:
+#   - подключиться к 127.0.0.1:15550
+#   - получить "G15 daemon HELLO"
+#   - отправить тип 'G\x00\x00\x00'
+#   - гнать кадры 6880 байт (160x43, 1 байт/пиксель)
+#   - слушать keystate (unsigned int) для L2/L3/L4/L5
+#   - завершиться по SIGTERM
+
+demo    = python3 /home/ldf/PROJECTS/g510s-master/lcd-demo.py
+# cpu     = /home/ldf/lcd-clients/lcd-cpu
+# weather = /home/ldf/lcd-clients/lcd-weather

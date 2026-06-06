@@ -68,6 +68,11 @@ int client_connect(lcdlist_t **lcdlist, int listening_socket) {
     
     clientnode = lcdnode_add(lcdlist);
     clientnode->lcd->connection = conn_s;
+
+    if (pending_foreground) {
+      pending_foreground = 0;
+      (*lcdlist)->current = clientnode;
+    }
     
     memset(&attr, 0, sizeof(pthread_attr_t));
     pthread_attr_init(&attr);
@@ -75,13 +80,10 @@ int client_connect(lcdlist_t **lcdlist, int listening_socket) {
     pthread_attr_setstacksize(&attr, 256*1024);
     if (pthread_create(&client_connection, &attr, lcd_client_function, clientnode) != 0) {
       printf("G510s: unable to create client thread\n");
-      if (close(conn_s) < 0) {
-        printf("G510s: error calling close\n");
-        return -1;
-      }
+      lcdnode_remove(clientnode);
+      close(conn_s);
+      return -1;
     }
-    
-    pthread_detach(client_connection);
   }
   return 0;
 }
@@ -100,7 +102,7 @@ static void process_client_cmds(lcdnode_t *lcdnode, int sock, unsigned int *msgb
       msgret = send(sock, (void *)msgbuf, sizeof(current_key_state), 0);
     }
   } else if (msgbuf[0] == CLIENT_CMD_SWITCH_PRIORITIES) {
-    //pthread_mutex_lock(&lcdlist_mutex);
+    pthread_mutex_lock(&lcdlist_mutex);
     if (lcdnode->list->current != lcdnode) {
       lcdnode->last_priority = lcdnode->list->current;
       lcdnode->list->current = lcdnode;
@@ -116,24 +118,24 @@ static void process_client_cmds(lcdnode_t *lcdnode, int sock, unsigned int *msgb
         }
       }
     }
-    //pthread_mutex_unlock(&lcdlist_mutex);
+    pthread_mutex_unlock(&lcdlist_mutex);
   } else if (msgbuf[0] == CLIENT_CMD_IS_FOREGROUND) {
-    //pthread_mutex_lock(&lcdlist_mutex);
+    pthread_mutex_lock(&lcdlist_mutex);
     if (lcdnode->list->current == lcdnode) {
       msgbuf[0] = '1';
     } else {
       msgbuf[0] = '0';
     }
-    //pthread_mutex_unlock(&lcdlist_mutex);
+    pthread_mutex_unlock(&lcdlist_mutex);
     send(sock, msgbuf, 1, 0);
   } else if (msgbuf[0] == CLIENT_CMD_IS_USER_SELECTED) {
-    //pthread_mutex_lock(&lcdlist_mutex);
+    pthread_mutex_lock(&lcdlist_mutex);
     if (lcdnode->lcd->usr_foreground) {
       msgbuf[0] = '1';
     } else {
       msgbuf[0] = '0';
     }
-    //pthread_mutex_unlock(&lcdlist_mutex);
+    pthread_mutex_unlock(&lcdlist_mutex);
     send(sock, msgbuf, 1, 0);
   } else if (msgbuf[0] & CLIENT_CMD_BACKLIGHT) {
     // nothing
@@ -219,7 +221,7 @@ int g15_recv(lcdnode_t *lcdnode, int sock, char *buf, unsigned int len) {
     
     if (poll(pfd, 1, 500) > 0) {
       if (pfd[0].revents & POLLPRI && !(pfd[0].revents & POLLERR || pfd[0].revents & POLLHUP || pfd[0].revents & POLLNVAL)) {
-        memset(msgbuf, 0, 20);
+        memset(msgbuf, 0, sizeof(msgbuf));
         msgret = recv(sock, msgbuf, 10, MSG_OOB);
         if (msgret < 1) {
           break;

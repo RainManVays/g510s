@@ -76,11 +76,11 @@ void digital_clock(lcd_t *lcd) {
       g15r_renderString(canvas, (unsigned char *)date_buf, 0, G15_TEXT_MED, 80 - ((strlen(date_buf) * 5) / 2), 35);
     }
     
-    //pthread_mutex_lock(&lcdlist_mutex);
+    pthread_mutex_lock(&lcdlist_mutex);
     memset(lcd->buf, 0, G15_BUFFER_LEN);
     memcpy(lcd->buf, canvas->buffer, G15_BUFFER_LEN);
     lcd->ident = currtime;
-    //pthread_mutex_unlock(&lcdlist_mutex);
+    pthread_mutex_unlock(&lcdlist_mutex);
     
     free(canvas);
   }

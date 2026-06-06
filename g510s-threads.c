@@ -27,12 +27,25 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <libg15.h>
+#include <libusb-1.0/libusb.h>
 #include <libappindicator/app-indicator.h>
 
 #include "g510s.h"
 
 
 extern AppIndicator *indicator;
+
+static gboolean cb_indicator_attention(gpointer data) {
+  (void)data;
+  app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ATTENTION);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean cb_indicator_active(gpointer data) {
+  (void)data;
+  app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+  return G_SOURCE_REMOVE;
+}
 
 void *lcd_client_function(void *display) {
   lcdnode_t *g15node = display;
@@ -43,7 +56,14 @@ void *lcd_client_function(void *display) {
   int client_sock = client_lcd->connection;
   char helo[] = SERV_HELO;
   unsigned char *tmpbuf = malloc(6880);
-  
+
+  if (tmpbuf == NULL) {
+    printf("G510s: failed to allocate client buffer\n");
+    close(client_sock);
+    lcdnode_remove(display);
+    pthread_exit(NULL);
+  }
+
   connected_clients++;
   
   if (g15_send(client_sock, (char*)helo, strlen(SERV_HELO)) < 0) {
@@ -60,11 +80,11 @@ void *lcd_client_function(void *display) {
       if (retval != 6880) {
         break;
       }
-      //pthread_mutex_lock(&lcdlist_mutex);
-      memset(client_lcd->buf, 0, 1024);
+      pthread_mutex_lock(&lcdlist_mutex);
+      memset(client_lcd->buf, 0, sizeof(client_lcd->buf));
       convert_buf(client_lcd, tmpbuf);
       client_lcd->ident = random();
-      //pthread_mutex_unlock(&lcdlist_mutex);
+      pthread_mutex_unlock(&lcdlist_mutex);
     }
   } else if (tmpbuf[0] == 'R') {
     while (leaving == 0) {
@@ -72,10 +92,10 @@ void *lcd_client_function(void *display) {
       if (retval != 1048) {
         break;
       }
-      //pthread_mutex_lock(&lcdlist_mutex);
+      pthread_mutex_lock(&lcdlist_mutex);
       memcpy(client_lcd->buf, tmpbuf, sizeof(client_lcd->buf));
       client_lcd->ident = random();
-      //pthread_mutex_unlock(&lcdlist_mutex);
+      pthread_mutex_unlock(&lcdlist_mutex);
     }
   } else if (tmpbuf[0] == 'W') {
     while (leaving == 0) {
@@ -95,20 +115,24 @@ void *lcd_client_function(void *display) {
       }
       
       buflen = (width / 8) * height;
-      
+
       if (buflen > 860) {
-        retval = g15_recv(g15node, client_sock, NULL, buflen-860);
+        unsigned char *discard = malloc(buflen - 860);
+        if (discard != NULL) {
+          g15_recv(g15node, client_sock, (char *)discard, buflen - 860);
+          free(discard);
+        }
         buflen = 860;
       }
-      
+
       if (width != 160) {
         goto exitthread;
       }
-      
-      //pthread_mutex_lock(&lcdlist_mutex);
-      memcpy(client_lcd->buf, tmpbuf + header, buflen + header);
+
+      pthread_mutex_lock(&lcdlist_mutex);
+      memcpy(client_lcd->buf, tmpbuf + header, buflen);
       client_lcd->ident = random();
-      //pthread_mutex_unlock(&lcdlist_mutex);
+      pthread_mutex_unlock(&lcdlist_mutex);
     }
   }
   exitthread:
@@ -125,15 +149,23 @@ void *key_function(void *lcdlist) {
   static unsigned int key_state = 0;
   lcdlist_t *displaylist = (lcdlist_t*)(lcdlist);
   
+  {
+    int max_fd = 0;
+    for (int fd = 0; fd < 4096; fd++)
+      if (fcntl(fd, F_GETFD) != -1) max_fd = fd;
+    printf("G510s: [key_function] starting, highest open fd = %d\n", max_fd);
+  }
+
   while (!leaving) {
     if (device_found) {
       keyreturn = getPressedKeys(&key, 0);
-      
-      // dont process normal keys
-      while (keyreturn == G15_ERROR_TRY_AGAIN) {
+
+      // dont process normal keys; cap retries to avoid infinite spin
+      int try_again = 0;
+      while (keyreturn == G15_ERROR_TRY_AGAIN && !leaving && try_again++ < 10) {
         keyreturn = getPressedKeys(&key, 0);
       }
-      
+
       // process extra keys
       if ((keyreturn == G15_NO_ERROR) && (key != key_state)) {
         current_key_state = key;
@@ -142,22 +174,54 @@ void *key_function(void *lcdlist) {
       }
       
       // handle hotplugging of keyboard or sound devices
-      if (keyreturn == -ENODEV) {
+      if (keyreturn == LIBUSB_ERROR_NO_DEVICE) {
+        pthread_mutex_lock(&libg15_mutex);
         device_found = 0;
-        app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ATTENTION);
         exit_uinput();
         exitLibG15();
-        while (!device_found) {
-          printf("G510s: device disconnected, retrying...\n");
+        pthread_mutex_unlock(&libg15_mutex);
+        g_idle_add(cb_indicator_attention, NULL);
+        printf("G510s: device disconnected, retrying...\n");
+        while (!device_found && !leaving) {
           if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
-            printf("G510s: found device 046d:c22d\n");
+            printf("G510s: [hotplug] found device 046d:c22d\n");
             device_found = 1;
           } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
-            printf("G510s: found device 046d:c22e\n");
+            printf("G510s: [hotplug] found device 046d:c22e\n");
             device_found = 1;
+          } else {
+            exitLibG15();
           }
           sleep(1);
         }
+        if (!leaving) {
+          if (init_uinput() != 0) {
+            printf("G510s: failed to initialize uinput, media keys not available\n");
+          }
+          set_mkey_state(g510s_data.mkey_state);
+          if (displaylist->tail == displaylist->current) {
+            displaylist->current->lcd->ident = 0;
+          }
+          g_idle_add(cb_indicator_active, NULL);
+        }
+      }
+      usleep(10000); /* 10ms between polls: ~100/s, keeps CPU near 0% */
+    } else { // device was not found
+      // wait for a device
+      printf("G510s: waiting for device...\n");
+      while (!device_found && !leaving) {
+        if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
+          printf("G510s: [thread] found device 046d:c22d\n");
+          device_found = 1;
+        } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
+          printf("G510s: [thread] found device 046d:c22e\n");
+          device_found = 1;
+        } else {
+          exitLibG15();
+        }
+        sleep(1);
+      }
+      if (!leaving) {
         if (init_uinput() != 0) {
           printf("G510s: failed to initialize uinput, media keys not available\n");
         }
@@ -165,29 +229,8 @@ void *key_function(void *lcdlist) {
         if (displaylist->tail == displaylist->current) {
           displaylist->current->lcd->ident = 0;
         }
-        app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
+        g_idle_add(cb_indicator_active, NULL);
       }
-    } else { // device was not found
-      // wait for a device
-      while (!device_found) {
-        printf("G510s: waiting for device...\n");
-        if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
-          printf("G510s: found device 046d:c22d\n");
-          device_found = 1;
-        } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
-          printf("G510s: found device 046d:c22e\n");
-          device_found = 1;
-        }
-        sleep(1);
-      }
-      if (init_uinput() != 0) {
-        printf("G510s: failed to initialize uinput, media keys not available\n");
-      }
-      set_mkey_state(g510s_data.mkey_state);
-      if (displaylist->tail == displaylist->current) {
-        displaylist->current->lcd->ident = 0;
-      }
-      app_indicator_set_status(indicator, APP_INDICATOR_STATUS_ACTIVE);
     }
   }
   return NULL;
@@ -198,10 +241,16 @@ void *update_function(void *lcdlist) {
   static long int lastlcd = 1;
   
   lcd_t *displaying = displaylist->tail->lcd;
-  memset(displaying->buf, 0, 1024);
+  memset(displaying->buf, 0, sizeof(displaying->buf));
   displaying->ident = 0;
   
   while (!leaving) {
+    /* Scan JSONL files outside the mutex — cl_load_all() takes 100-500ms and
+     * must not hold libg15_mutex during I/O. */
+    if (g510s_data.internal_screen == 3)
+      claude_maybe_scan();
+
+    pthread_mutex_lock(&libg15_mutex);
     if (device_found) {
       // only update the color if the changes will be visible
       if (update == g510s_data.mkey_state) {
@@ -219,28 +268,36 @@ void *update_function(void *lcdlist) {
             setG510LEDColor(g510s_data.mr.red, g510s_data.mr.green, g510s_data.mr.blue);
             break;
           default:
-            printf("G510s: invalide mkey_state!!\n");
+            printf("G510s: invalid mkey_state!!\n");
             break;
         }
         update = 0;
       }
-      
+
       displaying = displaylist->current->lcd;
-      
+
       if (displaylist->tail == displaylist->current) {
-        digital_clock(displaying);
+        if (g510s_data.internal_screen == 1)
+          cpu_screen(displaying);
+        else if (g510s_data.internal_screen == 2)
+          sysmon_screen(displaying);
+        else if (g510s_data.internal_screen == 3)
+          claude_screen(displaying);
+        else
+          digital_clock(displaying);
       }
-      
+
       if (displaying->ident != lastlcd) {
         writePixmapToLCD(displaying->buf);
         lastlcd = displaying->ident;
       }
-      
+
       // we dont do anything here
       if (displaying->state_changed) {
         displaying->state_changed = 0;
       }
     }
+    pthread_mutex_unlock(&libg15_mutex);
     usleep(50000);
   }
   return NULL;

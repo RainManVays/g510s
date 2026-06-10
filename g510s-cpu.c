@@ -16,6 +16,7 @@
  *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1335  USA
  */
 
+#define LOG_MODULE "cpu"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,12 +85,14 @@ static int cpu_pct(const cpu_stat_t *prev, const cpu_stat_t *curr) {
 }
 
 void cpu_screen_init(void) {
+    LDEBUG("initializing CPU screen");
     cpu_stat_t curr[CPU_MAX_CORES + 1];
     int cores = read_cpu_stats(curr, CPU_MAX_CORES);
-    if (cores < 0) return;
+    if (cores < 0) { LWARN("failed to read /proc/stat"); return; }
     memcpy(cpu_prev, curr, sizeof(cpu_stat_t) * (cores + 1));
     cpu_n_cores = cores;
     cpu_initialized = 1;
+    LDEBUG("CPU screen ready: %d cores detected", cores);
 }
 
 /*
@@ -109,6 +112,11 @@ void cpu_screen(lcd_t *lcd) {
 
     long elapsed_ms = (now.tv_sec - last_data_update.tv_sec) * 1000L +
                       (now.tv_nsec - last_data_update.tv_nsec) / 1000000L;
+
+    int was_zero = (lcd->ident == 0);
+    if (was_zero)
+        switch_log("cpu_screen: elapsed=%ldms refresh_ms=%d cpu_last_total=%d",
+                   elapsed_ms, cpu_refresh_ms, cpu_last_total);
 
     if (elapsed_ms >= cpu_refresh_ms) {
         cpu_stat_t curr[CPU_MAX_CORES + 1];
@@ -134,7 +142,10 @@ void cpu_screen(lcd_t *lcd) {
 
     /* Render if new data arrived OR screen was invalidated (ident==0 = forced redraw) */
     if (!new_data && lcd->ident != 0) return;
-    if (cpu_last_total < 0) return;  /* no data yet — wait for first full collection */
+    if (cpu_last_total < 0) {
+        switch_log("cpu_screen: EARLY RETURN — no data yet (cpu_last_total<0)");
+        return;
+    }
 
     g15canvas *canvas = malloc(sizeof(g15canvas));
     if (!canvas) return;
@@ -175,6 +186,8 @@ void cpu_screen(lcd_t *lcd) {
     memcpy(lcd->buf, canvas->buffer, G15_BUFFER_LEN);
     lcd->ident = random();
     pthread_mutex_unlock(&lcdlist_mutex);
+    if (was_zero)
+        switch_log("cpu_screen: rendered OK ident=%ld new_data=%d", lcd->ident, new_data);
 
     free(canvas);
 }

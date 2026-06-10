@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "net"
 
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +38,7 @@ void send_keystate(lcd_t *client, unsigned int key) {
   int msgret;
   
   if ((msgret = send(sock, (void *)&key, sizeof(key), 0)) < 0) {
-    printf("G510s: socket send failed\n");
+    LERROR("socket send failed");
   }
 }
 
@@ -61,7 +62,7 @@ int client_connect(lcdlist_t **lcdlist, int listening_socket) {
       if (errno == EWOULDBLOCK || errno == EAGAIN) {
         // nothing
       } else {
-        printf("G510s: error calling accept\n");
+        LERROR("accept() failed: %s", strerror(errno));
         return -1;
       }
     }
@@ -79,7 +80,7 @@ int client_connect(lcdlist_t **lcdlist, int listening_socket) {
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_attr_setstacksize(&attr, 256*1024);
     if (pthread_create(&client_connection, &attr, lcd_client_function, clientnode) != 0) {
-      printf("G510s: unable to create client thread\n");
+      LERROR("unable to create client thread");
       lcdnode_remove(clientnode);
       close(conn_s);
       return -1;
@@ -94,7 +95,7 @@ static void process_client_cmds(lcdnode_t *lcdnode, int sock, unsigned int *msgb
   if (msgbuf[0] == CLIENT_CMD_GET_KEYSTATE) {
     if (lcdnode->list->current == lcdnode) {
       if ((msgret = send(sock, (void *)&current_key_state, sizeof(current_key_state), 0)) < 0) {
-        printf("G510s: socket send failed\n");
+        LERROR("socket send failed");
       }
       current_key_state = 0;
     } else {
@@ -152,7 +153,7 @@ int init_sockserver() {
   struct sockaddr_in servaddr;
   
   if ((listening_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-    printf("G510s: unable to create socket\n");
+    LERROR("socket() failed: %s", strerror(errno));
     return -1;
   }
   
@@ -165,12 +166,12 @@ int init_sockserver() {
   servaddr.sin_port = htons(LISTEN_PORT);
   
   if (bind(listening_socket, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-    printf("G510s: error calling bind\n");
+    LERROR("bind() failed: %s", strerror(errno));
     return -1;
   }
   
   if (listen(listening_socket, MAX_CLIENTS) < 0) {
-    printf("G510s: error calling listen\n");
+    LERROR("listen() failed: %s", strerror(errno));
     return -1;
   }
   

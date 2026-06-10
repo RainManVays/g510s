@@ -1,3 +1,4 @@
+BINDIR     ?= /usr/local/bin
 DATA_DIR   ?= /usr/local/share/g510s
 COMPAT_DIR ?= .compat
 
@@ -32,6 +33,9 @@ g510s-keys.o: g510s-keys.c g510s.h g510s-display-registry.h
 g510s-list.o: g510s-list.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-list.c -o g510s-list.o
 
+g510s-log.o: g510s-log.c g510s-log.h
+	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-log.c -o g510s-log.o
+
 g510s-misc.o: g510s-misc.c g510s.h
 	$(CC) $(CFLAGS) -fcommon -Wall -c g510s-misc.c -o g510s-misc.o
 
@@ -50,26 +54,26 @@ g510s-signals.o: g510s-signals.c g510s.h
 g510s-threads.o: g510s-threads.c g510s.h g510s-display-registry.h
 	$(CC) $(CFLAGS) -fcommon -Wall `pkg-config --cflags appindicator3-0.1` -c g510s-threads.c -o g510s-threads.o
 
-g510s: g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o
-	$(CC) $(CFLAGS) -fcommon -Wall g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o -o g510s -lg15 -lg15render -lpthread -rdynamic `pkg-config --libs gtk+-3.0 appindicator3-0.1`
+g510s: g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-log.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o
+	$(CC) $(CFLAGS) -fcommon -Wall g510s.o g510s-clock.o g510s-cpu.o g510s-sysmon.o g510s-claude-lcd.o g510s-config.o g510s-keys.o g510s-list.o g510s-log.o g510s-misc.o g510s-net.o g510s-signals.o g510s-threads.o g510s-display-registry.o g510s-displays-gui.o -o g510s -lg15 -lg15render -lpthread -lusb-1.0 -rdynamic `pkg-config --libs gtk+-3.0 appindicator3-0.1`
 
 install:
-	-mkdir -p /usr/local/share/g510s
-	-cp g510s.svg /usr/local/share/g510s
-	-cp g510s-alert.svg /usr/local/share/g510s
-	-cp g510s.glade /usr/local/share/g510s
-	install -m 755 g510s /usr/local/bin/g510s
+	-mkdir -p $(DATA_DIR)
+	-cp g510s.svg $(DATA_DIR)
+	-cp g510s-alert.svg $(DATA_DIR)
+	-cp g510s.glade $(DATA_DIR)
+	install -m 755 g510s $(BINDIR)/g510s
 	-cp 99-g510s.rules /lib/udev/rules.d
 	-cp g510s.desktop /etc/xdg/autostart
 
 uninstall:
-	-rm -f /usr/local/share/g510s/g510s.svg
-	-rm -f /usr/local/share/g510s/g510s-alert.svg
-	-rm -f /usr/local/share/g510s/g510s.glade
-	-rm -f /usr/local/bin/g510s
+	-rm -f $(DATA_DIR)/g510s.svg
+	-rm -f $(DATA_DIR)/g510s-alert.svg
+	-rm -f $(DATA_DIR)/g510s.glade
+	-rm -f $(BINDIR)/g510s
 	-rm -f /lib/udev/rules.d/99-g510s.rules
 	-rm -f /etc/xdg/autostart/g510s.desktop
-	-rmdir /usr/local/share/g510s
+	-rmdir $(DATA_DIR)
 
 clean:
 	-rm -f g510s
@@ -86,4 +90,5 @@ clean:
 	-rm -f g510s-signals.o
 	-rm -f g510s-threads.o
 	-rm -f g510s-display-registry.o
+	-rm -f g510s-log.o
 	-rm -f g510s-displays-gui.o

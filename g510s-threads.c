@@ -18,10 +18,12 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "threads"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -59,7 +61,7 @@ void *lcd_client_function(void *display) {
   unsigned char *tmpbuf = malloc(6880);
 
   if (tmpbuf == NULL) {
-    printf("G510s: failed to allocate client buffer\n");
+    LERROR("failed to allocate client buffer");
     close(client_sock);
     lcdnode_remove(display);
     pthread_exit(NULL);
@@ -154,7 +156,7 @@ void *key_function(void *lcdlist) {
     int max_fd = 0;
     for (int fd = 0; fd < 4096; fd++)
       if (fcntl(fd, F_GETFD) != -1) max_fd = fd;
-    printf("G510s: [key_function] starting, highest open fd = %d\n", max_fd);
+    LDEBUG("starting, highest open fd = %d", max_fd);
   }
 
   /* Set M-key LED state from saved config.  Done here (not in main thread)
@@ -169,7 +171,16 @@ void *key_function(void *lcdlist) {
        * G510 only sends USB interrupt on key change (not continuously),
        * so timeout=0 (unlimited) would block libusb_mutex forever when
        * the keyboard is idle, starving set_mkey_state and writePixmapToLCD. */
-      keyreturn = getPressedKeys(&key, 10);
+      {
+        struct timespec _k0, _k1;
+        clock_gettime(CLOCK_MONOTONIC, &_k0);
+        keyreturn = getPressedKeys(&key, 10);
+        clock_gettime(CLOCK_MONOTONIC, &_k1);
+        long _kms = (_k1.tv_sec - _k0.tv_sec)*1000L
+                  + (_k1.tv_nsec - _k0.tv_nsec)/1000000L;
+        if (_kms > 100)
+          LWARN("getPressedKeys blocked: %ldms ret=%d", _kms, keyreturn);
+      }
 
       // dont process normal keys; cap retries to avoid infinite spin
       // Use 1ms timeout in retries: TRY_AGAIN means a normal-key report
@@ -177,6 +188,29 @@ void *key_function(void *lcdlist) {
       int try_again = 0;
       while (keyreturn == G15_ERROR_TRY_AGAIN && !leaving && try_again++ < 10) {
         keyreturn = getPressedKeys(&key, 1);
+      }
+
+      /* Log unexpected USB return codes.
+       * For G510, handle_usb_errors() translates LIBUSB_ERROR_TIMEOUT →
+       * G15_ERROR_READING_USB_DEVICE (4): normal keyboard idle, not an error.
+       * G15_ERROR_TIMEOUT (3) is the G13-path equivalent; also harmless. */
+      if (keyreturn != G15_NO_ERROR &&
+          keyreturn != G15_ERROR_TRY_AGAIN &&
+          keyreturn != G15_ERROR_TIMEOUT &&
+          keyreturn != G15_ERROR_READING_USB_DEVICE &&
+          keyreturn != LIBUSB_ERROR_TIMEOUT &&
+          keyreturn != LIBUSB_ERROR_NO_DEVICE) {
+        LWARN("getPressedKeys unexpected: %d (%s)", keyreturn, libusb_strerror(keyreturn));
+      }
+
+      /* Heartbeat — confirms key thread is alive even when keyboard is idle */
+      {
+        static time_t _last_hb = 0;
+        time_t _now = time(NULL);
+        if (_now - _last_hb >= 30) {
+          LDEBUG("heartbeat device=%d keyreturn=%d", device_found, keyreturn);
+          _last_hb = _now;
+        }
       }
 
       // process extra keys
@@ -194,22 +228,37 @@ void *key_function(void *lcdlist) {
         exitLibG15();
         pthread_mutex_unlock(&libg15_mutex);
         g_idle_add(cb_indicator_attention, NULL);
-        printf("G510s: device disconnected, retrying...\n");
-        while (!device_found && !leaving) {
-          if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
-            printf("G510s: [hotplug] found device 046d:c22d\n");
-            device_found = 1;
-          } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
-            printf("G510s: [hotplug] found device 046d:c22e\n");
-            device_found = 1;
-          } else {
-            exitLibG15();
+        LINFO("device disconnected, retrying...");
+        {
+          int _attempt = 0;
+          struct timespec _disc0;
+          clock_gettime(CLOCK_MONOTONIC, &_disc0);
+          while (!device_found && !leaving) {
+            _attempt++;
+            if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
+              struct timespec _disc1; clock_gettime(CLOCK_MONOTONIC, &_disc1);
+              long _dms = (_disc1.tv_sec - _disc0.tv_sec)*1000L
+                        + (_disc1.tv_nsec - _disc0.tv_nsec)/1000000L;
+              LINFO("[hotplug] found 046d:c22d after %d attempt(s), %ldms", _attempt, _dms);
+              device_found = 1;
+              break;
+            } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
+              struct timespec _disc1; clock_gettime(CLOCK_MONOTONIC, &_disc1);
+              long _dms = (_disc1.tv_sec - _disc0.tv_sec)*1000L
+                        + (_disc1.tv_nsec - _disc0.tv_nsec)/1000000L;
+              LINFO("[hotplug] found 046d:c22e after %d attempt(s), %ldms", _attempt, _dms);
+              device_found = 1;
+              break;
+            } else {
+              exitLibG15();
+              LDEBUG("[hotplug] attempt %d failed, retrying in 1s", _attempt);
+            }
+            sleep(1);
           }
-          sleep(1);
         }
         if (!leaving) {
           if (init_uinput() != 0) {
-            printf("G510s: failed to initialize uinput, media keys not available\n");
+            LWARN("failed to initialize uinput, media keys not available");
           }
           set_mkey_state(g510s_data.mkey_state);
           if (displaylist->tail == displaylist->current) {
@@ -221,13 +270,13 @@ void *key_function(void *lcdlist) {
       /* no usleep: the 10ms getPressedKeys timeout provides the same rate */
     } else { // device was not found
       // wait for a device
-      printf("G510s: waiting for device...\n");
+      LINFO("waiting for device...");
       while (!device_found && !leaving) {
         if (setupLibG15(0x46d, 0xc22d, 0) == G15_NO_ERROR) {
-          printf("G510s: [thread] found device 046d:c22d\n");
+          LINFO("[thread] found device 046d:c22d");
           device_found = 1;
         } else if (setupLibG15(0x46d, 0xc22e, 0) == G15_NO_ERROR) {
-          printf("G510s: [thread] found device 046d:c22e\n");
+          LINFO("[thread] found device 046d:c22e");
           device_found = 1;
         } else {
           exitLibG15();
@@ -236,7 +285,7 @@ void *key_function(void *lcdlist) {
       }
       if (!leaving) {
         if (init_uinput() != 0) {
-          printf("G510s: failed to initialize uinput, media keys not available\n");
+          LWARN("failed to initialize uinput, media keys not available");
         }
         set_mkey_state(g510s_data.mkey_state);
         if (displaylist->tail == displaylist->current) {
@@ -257,13 +306,41 @@ void *update_function(void *lcdlist) {
   memset(displaying->buf, 0, sizeof(displaying->buf));
   displaying->ident = 0;
   
+  static int screen_prev = -1;  /* screen id seen on previous iteration */
+
   while (!leaving) {
-    /* Scan JSONL files outside the mutex — cl_load_all() takes 100-500ms and
-     * must not hold libg15_mutex during I/O. */
+    /* Heartbeat — confirms update thread is alive even when LCD is unchanged */
     {
-      display_entry_t *d_cur = display_registry_by_id(g510s_data.internal_screen);
-      if (d_cur && d_cur->id == DISP_CLAUDE)
+      static time_t _last_hb = 0;
+      time_t _now = time(NULL);
+      if (_now - _last_hb >= 30) {
+        LDEBUG("heartbeat screen=%d ident=%ld", g510s_data.internal_screen, displaying->ident);
+        _last_hb = _now;
+      }
+    }
+
+    /* Scan JSONL files outside the mutex — cl_load_all() takes 100-500ms and
+     * must not hold libg15_mutex during I/O.
+     *
+     * Guard: only scan if Claude has been the active screen for at least TWO
+     * consecutive 50ms cycles.  This prevents a rapid L1 pass-through
+     * (Sysmon→Claude→Clock in <50ms) from triggering a 5-second scan and
+     * blocking the render thread. */
+    {
+      int screen_now = g510s_data.internal_screen;
+      if (screen_now == DISP_CLAUDE && screen_prev == DISP_CLAUDE) {
+        struct timespec _cs0, _cs1;
+        clock_gettime(CLOCK_MONOTONIC, &_cs0);
+        switch_log("claude_maybe_scan: start");
         claude_maybe_scan();
+        switch_log("claude_maybe_scan: done");
+        clock_gettime(CLOCK_MONOTONIC, &_cs1);
+        long _cms = (_cs1.tv_sec - _cs0.tv_sec)*1000L
+                  + (_cs1.tv_nsec - _cs0.tv_nsec)/1000000L;
+        if (_cms > 1000)
+          LWARN("claude_maybe_scan slow: %ldms", _cms);
+      }
+      screen_prev = screen_now;
     }
 
     pthread_mutex_lock(&libg15_mutex);
@@ -284,7 +361,7 @@ void *update_function(void *lcdlist) {
             setG510LEDColor(g510s_data.mr.red, g510s_data.mr.green, g510s_data.mr.blue);
             break;
           default:
-            printf("G510s: invalid mkey_state!!\n");
+            LERROR("invalid mkey_state: %d", g510s_data.mkey_state);
             break;
         }
         update = 0;
@@ -294,14 +371,42 @@ void *update_function(void *lcdlist) {
 
       if (displaylist->tail == displaylist->current) {
         display_entry_t *d = display_registry_by_id(g510s_data.internal_screen);
-        if (d && d->render_preview)
-          d->render_preview(displaying);
-        else
-          digital_clock(displaying);
+        int was_zero = (displaying->ident == 0);
+        if (was_zero)
+          switch_log("update: calling render id=%d (%s)",
+                     d ? d->id : -1, d ? d->name : "null→clock");
+        {
+          struct timespec _r0, _r1;
+          clock_gettime(CLOCK_MONOTONIC, &_r0);
+          if (d && d->render_preview)
+            d->render_preview(displaying);
+          else
+            digital_clock(displaying);
+          clock_gettime(CLOCK_MONOTONIC, &_r1);
+          long _rms = (_r1.tv_sec - _r0.tv_sec)*1000L
+                    + (_r1.tv_nsec - _r0.tv_nsec)/1000000L;
+          if (_rms > 50)
+            LWARN("screen render slow: screen=%d %ldms", g510s_data.internal_screen, _rms);
+        }
+        if (was_zero)
+          switch_log("update: render done, ident_after=%ld%s",
+                     displaying->ident,
+                     displaying->ident == 0 ? " ← STILL 0 (early return in screen fn!)" : "");
       }
 
       if (displaying->ident != lastlcd) {
-        writePixmapToLCD(displaying->buf);
+        if (lastlcd == 0)
+          switch_log("update: writePixmapToLCD (first frame after switch)");
+        struct timespec _w0, _w1;
+        clock_gettime(CLOCK_MONOTONIC, &_w0);
+        int _wret = writePixmapToLCD(displaying->buf);
+        clock_gettime(CLOCK_MONOTONIC, &_w1);
+        long _wms = (_w1.tv_sec - _w0.tv_sec)*1000L
+                  + (_w1.tv_nsec - _w0.tv_nsec)/1000000L;
+        if (_wret != 0)
+          LWARN("writePixmapToLCD failed: %d (took %ldms)", _wret, _wms);
+        else if (_wms > 200)
+          LWARN("writePixmapToLCD slow: %ldms", _wms);
         lastlcd = displaying->ident;
       }
 
@@ -321,12 +426,12 @@ void *server_function(void *lcdlist) {
   int g15_socket = -1;
   
   if ((g15_socket = init_sockserver()) < 0) {
-    printf("G510s: unable to initialise server at port %i\n", LISTEN_PORT);
+    LERROR("unable to initialise server at port %d", LISTEN_PORT);
     return NULL;
   }
-  
+
   if (fcntl(g15_socket, F_SETFL, O_NONBLOCK) < 0) {
-    printf("G510s: unable to set socket to nonblocking\n");
+    LWARN("unable to set socket to nonblocking");
   }
   
   while (!leaving) {

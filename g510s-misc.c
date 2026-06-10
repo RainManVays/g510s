@@ -18,15 +18,33 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "misc"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <time.h>
 #include <pthread.h>
 #include <libg15.h>
 
 #include "g510s.h"
+
+/* ── Switch-path timing ─────────────────────────────────────────────── */
+
+static struct timespec sw_t0;
+
+void switch_log_mark(void) {
+    clock_gettime(CLOCK_MONOTONIC, &sw_t0);
+}
+
+/* Called by the switch_log() macro in g510s.h to get elapsed since mark. */
+long _switch_log_elapsed_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec  - sw_t0.tv_sec)  * 1000L
+         + (now.tv_nsec - sw_t0.tv_nsec) / 1000000L;
+}
 
 
 int is_number(char number[]) {
@@ -97,7 +115,7 @@ void set_mkey_state(int state) {
       pthread_mutex_unlock(&libg15_mutex);
       break;
     default:
-      printf("G510s: invalid mkey!!\n");
+      LERROR("invalid mkey state: %d", g510s_data.mkey_state);
       return;
   }
 }
@@ -119,7 +137,7 @@ void set_color() {
       mkey = &g510s_data.mr;
       break;
     default:
-      printf("G510s: invalid mkey!!\n");
+      LERROR("invalid mkey state: %d", g510s_data.mkey_state);
       return;
   }
   
@@ -146,7 +164,7 @@ void run_gkey_cmd(int gkey) {
       mkey = &g510s_data.mr;
       break;
     default:
-      printf("G510s: invalid mkey!!\n");
+      LERROR("invalid mkey state: %d", g510s_data.mkey_state);
       return;
   }
   
@@ -206,7 +224,7 @@ void run_gkey_cmd(int gkey) {
       cmd = mkey->g18;
       break;
     default:
-      printf("G510s: invalid gkey!!\n");
+      LERROR("invalid gkey: %d", gkey);
       return;
   }
   
@@ -218,6 +236,6 @@ void run_gkey_cmd(int gkey) {
     execl("/bin/sh", "sh", "-c", cmd, NULL);
     _exit(1);
   } else if (pid < 0) {
-    printf("G510s: fork failed for gkey %d\n", gkey);
+    LERROR("fork failed for gkey %d", gkey);
   }
 }

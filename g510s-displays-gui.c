@@ -6,6 +6,8 @@
  *    displays_gui_save()             — call from the global Save handler
  */
 
+#define LOG_MODULE "gui"
+
 #include <stdio.h>
 #include <string.h>
 #include <gtk/gtk.h>
@@ -170,11 +172,19 @@ static void on_btn_down(GtkButton *btn, gpointer unused)
  */
 void displays_gui_save(void)
 {
+    LDEBUG("start  s_initialized=%d", s_initialized);
     for (int i = 0; i < display_registry_count(); i++) {
         display_entry_t *e = display_registry_get(i);
+        LDEBUG("  order=%d  id=%d  %-7s  save_settings=%s",
+               i,
+               e ? e->id   : -1,
+               e ? e->name : "(null)",
+               (e && e->save_settings) ? "yes" : "no");
         if (e && e->save_settings) e->save_settings();
+        LDEBUG("  order=%d done", i);
     }
     display_registry_save();
+    LDEBUG("done");
 }
 
 /* ── Lazy initializer ─────────────────────────────────────────────── */
@@ -182,7 +192,11 @@ void displays_gui_save(void)
 /* Called the first time the Displays tab becomes visible. */
 static void displays_gui_do_init(void)
 {
-    if (s_initialized || !s_root) return;
+    if (s_initialized || !s_root) {
+        LDEBUG("skip (initialized=%d root=%p)", s_initialized, (void*)s_root);
+        return;
+    }
+    LDEBUG("start  n_displays=%d", display_registry_count());
     s_initialized = TRUE;
 
     GtkBox *root = s_root;
@@ -309,6 +323,7 @@ static void displays_gui_do_init(void)
 
     /* Show the startup display first */
     s_cur = display_registry_startup_idx();
+    LDEBUG("done  s_cur=%d", s_cur);
     refresh_view();
 }
 
@@ -326,8 +341,9 @@ static void on_displays_map(GtkWidget *w, gpointer unused)
 void displays_gui_init(GtkBuilder *builder)
 {
     s_root = GTK_BOX(gtk_builder_get_object(builder, "box_displays"));
+    LDEBUG("root=%p", (void*)s_root);
     if (!s_root) {
-        printf("G510s: displays_gui_init: box_displays not found\n");
+        LERROR("box_displays not found in glade file");
         return;
     }
     g_signal_connect(s_root, "map", G_CALLBACK(on_displays_map), NULL);

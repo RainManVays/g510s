@@ -85,6 +85,7 @@
  *   4. Update CL_PLAN_PRO below. Derive Max5/Max20 by multiplying by 5 and 20.
  *   5. Rebuild and reinstall: make && sudo make install && pkill g510s && g510s
  */
+#define LOG_MODULE "claude"
 #define _DEFAULT_SOURCE   /* timegm() */
 #include <stdio.h>
 #include <stdlib.h>
@@ -307,9 +308,11 @@ static void cl_load_all(void) {
 /* ── Init ────────────────────────────────────────────────────────────── */
 
 void claude_screen_init(void) {
+    LDEBUG("initializing claude screen");
     cl_load_plan();
     cl_load_all();
     cl_last_scan = cl_last_screen = time(NULL);
+    LDEBUG("claude screen ready");
 }
 
 /* Called from update_function BEFORE libg15_mutex to avoid holding the mutex
@@ -319,6 +322,7 @@ void claude_screen_init(void) {
 void claude_maybe_scan(void) {
     time_t now = time(NULL);
     if (now - cl_last_scan >= CL_SCAN_S) {
+        LDEBUG("rescanning JSONL files");
         cl_load_all();
         cl_last_scan = now;
     }

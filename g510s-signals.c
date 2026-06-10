@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "signals"
 
 #include <string.h>
 #include <gtk/gtk.h>
@@ -29,6 +30,7 @@ extern GtkCheckMenuItem *menuhidden;
 
 // menubar actions
 void on_menusave_activate(GtkMenuItem *menuitem, gpointer window) {
+  LDEBUG("save triggered");
   save_config();
   displays_gui_save();
 }
@@ -36,8 +38,10 @@ void on_menusave_activate(GtkMenuItem *menuitem, gpointer window) {
 void on_menuhidden_toggled(GtkMenuItem *menuitem, gpointer user_data) {
   if (gtk_check_menu_item_get_active(menuhidden) == TRUE) {
     g510s_data.gui_hidden = 1;
+    LDEBUG("GUI hidden");
   } else {
     g510s_data.gui_hidden = 0;
+    LDEBUG("GUI shown");
   }
 }
 

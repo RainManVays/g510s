@@ -10,6 +10,8 @@
  *               RIGHT  iface[n] v XXXX  ^ XXXX
  */
 
+#define LOG_MODULE "sysmon"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -263,6 +265,7 @@ static struct timespec sm_last_update = {0, 0};
 /* ── Initialization ───────────────────────────────────────────────────── */
 
 void sysmon_screen_init(void) {
+    LDEBUG("initializing sysmon screen");
     sm_cpu_t curr[SM_MAX_CORES + 1];
     int cores = sm_read_cpu(curr, SM_MAX_CORES);
     if (cores >= 0) {
@@ -318,6 +321,11 @@ void sysmon_screen(lcd_t *lcd) {
 
     long elapsed_ms = (now.tv_sec - sm_last_update.tv_sec) * 1000L +
                       (now.tv_nsec - sm_last_update.tv_nsec) / 1000000L;
+
+    int was_zero = (lcd->ident == 0);
+    if (was_zero)
+        switch_log("sysmon_screen: elapsed=%ldms refresh_ms=%d sm_cpu_total=%d",
+                   elapsed_ms, sysmon_refresh_ms, sm_cpu_total);
 
     if (elapsed_ms >= sysmon_refresh_ms) {
         long dt_ms = (sm_last_update.tv_sec > 0 || sm_last_update.tv_nsec > 0)
@@ -383,7 +391,10 @@ void sysmon_screen(lcd_t *lcd) {
     }
 
     if (!new_data && lcd->ident != 0) return;
-    if (sm_cpu_total < 0) return;
+    if (sm_cpu_total < 0) {
+        switch_log("sysmon_screen: EARLY RETURN — no data yet (sm_cpu_total<0)");
+        return;
+    }
 
     g15canvas *canvas = malloc(sizeof(g15canvas));
     if (!canvas) return;
@@ -480,6 +491,9 @@ void sysmon_screen(lcd_t *lcd) {
     memcpy(lcd->buf, canvas->buffer, G15_BUFFER_LEN);
     lcd->ident = random();
     pthread_mutex_unlock(&lcdlist_mutex);
+    if (was_zero)
+        switch_log("sysmon_screen: rendered OK ident=%ld new_data=%d vis_disk=%d vis_iface=%d",
+                   lcd->ident, new_data, vis_disk_n, vis_iface_n);
 
     free(canvas);
 }

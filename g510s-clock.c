@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "clock"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +37,7 @@ void digital_clock(lcd_t *lcd) {
     g15canvas *canvas = (g15canvas *)malloc(sizeof(g15canvas));
     
     if (canvas == NULL) {
-      printf("G510s: failed to create clock canvas\n");
+      LERROR("malloc failed for clock canvas");
       return;
     }
     

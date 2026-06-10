@@ -21,6 +21,8 @@
 
 #include <sys/types.h>
 
+#include "g510s-log.h"
+
 #define G510S_VERSION "0.0.3"
 
 #ifndef SO_PRIORITY
@@ -178,3 +180,10 @@ void *server_function(void *lcdlist);
 
 void display_registry_init(void);
 void displays_gui_save(void);
+
+void switch_log_mark(void);
+long _switch_log_elapsed_ms(void);
+/* switch_log() captures __func__ from the call site for accurate TRACE output */
+#define switch_log(fmt, ...) \
+    g510s_log(G510S_LOG_TRACE, "switch", __func__, \
+              "[SW +%4ldms] " fmt, _switch_log_elapsed_ms(), ##__VA_ARGS__)

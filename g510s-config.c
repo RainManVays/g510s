@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "config"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,7 +52,7 @@ void acquire_pidfile() {
     fclose(f);
 
     if (old_pid > 0 && kill(old_pid, 0) == 0) {
-      printf("G510s: stopping previous instance (pid %d)\n", old_pid);
+      LINFO("stopping previous instance (pid %d)", old_pid);
       kill(old_pid, SIGTERM);
       int waited = 0;
       while (waited < 20 && kill(old_pid, 0) == 0) {
@@ -59,7 +60,7 @@ void acquire_pidfile() {
         waited++;
       }
       if (kill(old_pid, 0) == 0) {
-        printf("G510s: previous instance did not exit, sending SIGKILL\n");
+        LWARN("previous instance (pid %d) did not exit, sending SIGKILL", old_pid);
         kill(old_pid, SIGKILL);
       }
     }
@@ -72,7 +73,7 @@ void acquire_pidfile() {
     fprintf(f, "%d\n", (int)getpid());
     fclose(f);
   } else {
-    printf("G510s: warning: could not write pidfile %s\n", path);
+    LWARN("could not write pidfile %s", path);
   }
 }
 
@@ -205,7 +206,7 @@ int check_dir() {
 
   home_env = getenv("HOME");
   if (home_env == NULL) {
-    printf("G510s: failed to find $HOME directory, using default settings\n");
+    LWARN("$HOME not set, cannot create config directory");
     return -1;
   }
   strncpy(home_path, home_env, sizeof(home_path) - 1);
@@ -216,7 +217,7 @@ int check_dir() {
 
   if ((dir = opendir(full_path)) == NULL) {
     if (mkdir(full_path, 0777) == -1) {
-      printf("G510s: failed to create directory $HOME/.g510s\n");
+      LERROR("failed to create directory $HOME/.g510s");
       free(full_path);
       return -1;
     }
@@ -238,17 +239,17 @@ int load_config() {
 
   home_env = getenv("HOME");
   if (home_env == NULL) {
-    printf("G510s: failed to find $HOME directory, using default settings\n");
+    LWARN("$HOME not set, using default settings");
     return -1;
   }
   strncpy(home_path, home_env, sizeof(home_path) - 1);
   home_path[sizeof(home_path) - 1] = '\0';
-  
+
   full_path = malloc(sizeof(home_path) + sizeof(file_name) + 1);
   snprintf(full_path, sizeof(home_path) + sizeof(file_name) + 1, "%s%s", home_path, file_name);
-  
+
   if ((file = fopen(full_path, "rb")) == NULL) {
-    printf("G510s: failed to read save file, using default settings\n");
+    LWARN("failed to read save file, using default settings");
     free(full_path);
     return -1;
   }
@@ -311,12 +312,12 @@ void load_screens() {
             sizeof(managed_screens[0].cmd) - 1);
     managed_screens[num_managed_screens].pid = 0;
     num_managed_screens++;
-    printf("G510s: screen[%d] \"%s\" = %s\n",
+    LDEBUG("screen[%d] \"%s\" = %s",
            num_managed_screens - 1, name, cmd);
   }
 
   fclose(file);
-  printf("G510s: loaded %d managed screen(s)\n", num_managed_screens);
+  LINFO("loaded %d managed screen(s)", num_managed_screens);
 }
 
 int save_config() {
@@ -328,17 +329,17 @@ int save_config() {
 
   home_env = getenv("HOME");
   if (home_env == NULL) {
-    printf("G510s: failed to find $HOME directory, skipping save\n");
+    LWARN("$HOME not set, skipping config save");
     return -1;
   }
   strncpy(home_path, home_env, sizeof(home_path) - 1);
   home_path[sizeof(home_path) - 1] = '\0';
-  
+
   full_path = malloc(sizeof(home_path) + sizeof(file_name) + 1);
   snprintf(full_path, sizeof(home_path) + sizeof(file_name) + 1, "%s%s", home_path, file_name);
-  
+
   if ((file = fopen(full_path, "wb")) == NULL) {
-    printf("G510s: failed to write save file\n");
+    LERROR("failed to write save file");
     free(full_path);
     return -1;
   }

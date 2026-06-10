@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "keys"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,7 +47,7 @@ int init_uinput() {
   }
   
   if (uinp_fd < 0) {
-    printf("G510s: failed to open uinput\n");
+    LERROR("failed to open uinput device");
     return -1;
   }
   
@@ -65,7 +66,7 @@ int init_uinput() {
   write(uinp_fd, &uinp, sizeof(uinp));
   
   if (ioctl(uinp_fd, UI_DEV_CREATE)) {
-    printf("G510s: failed to create uinput device\n");
+    LERROR("UI_DEV_CREATE failed");
     return -1;
   }
   
@@ -220,7 +221,11 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
     if (num_managed_screens == 0) {
       if (displaylist->head == displaylist->tail) {
         // No TCP clients: cycle internal screen via registry (only enabled displays)
+        switch_log_mark();
+        switch_log("L1 pressed: cur_id=%d", g510s_data.internal_screen);
+        int prev_id = g510s_data.internal_screen;
         g510s_data.internal_screen = display_registry_next_id(g510s_data.internal_screen);
+        switch_log("L1 result:  next_id=%d (was %d)  lcd->ident→0", g510s_data.internal_screen, prev_id);
         displaylist->current->lcd->ident = 0;
       } else {
         // Cycle through connected lcdlist clients
@@ -263,11 +268,11 @@ void process_keys(lcdlist_t *displaylist, unsigned int key, unsigned int key_sta
           _exit(1);
         } else if (pid > 0) {
           managed_screens[current_screen_idx].pid = pid;
-          printf("G510s: launched screen \"%s\" (pid %d)\n",
-                 managed_screens[current_screen_idx].name, pid);
+          LINFO("launched screen \"%s\" (pid %d)",
+                managed_screens[current_screen_idx].name, pid);
         } else {
           pending_foreground = 0;
-          printf("G510s: fork failed for screen \"%s\"\n",
+          LERROR("fork failed for screen \"%s\"",
                  managed_screens[current_screen_idx].name);
         }
       }

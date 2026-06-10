@@ -18,6 +18,7 @@
  *  Copyright © 2015 John Augustine
  */
 
+#define LOG_MODULE "list"
 
 #include <stdlib.h>
 #include <pthread.h>
@@ -70,7 +71,7 @@ lcdlist_t *lcdlist_init() {
 
 lcdnode_t *lcdnode_add(lcdlist_t **display_list) {
   lcdnode_t *new = NULL;
-  
+  LTRACE("adding LCD client node");
   pthread_mutex_lock(&lcdlist_mutex);
 
   new = malloc(sizeof(lcdnode_t));
@@ -94,7 +95,7 @@ void lcdnode_remove(lcdnode_t *oldnode) {
   lcdlist_t **display_list = NULL;
   lcdnode_t **prev = NULL;
   lcdnode_t **next = NULL;
-  
+  LTRACE("removing LCD client node");
   pthread_mutex_lock(&lcdlist_mutex);
 
   display_list = &oldnode->list;

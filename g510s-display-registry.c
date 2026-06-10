@@ -5,6 +5,8 @@
  *  implement the three callbacks in the corresponding .c file.
  */
 
+#define LOG_MODULE "registry"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,11 +98,19 @@ int display_registry_next_id(int current_id)
 {
     display_entry_t *cur = display_registry_by_id(current_id);
     int cur_order = cur ? cur->order : 0;
+    switch_log("next_id: cur_id=%d cur_order=%d n_displays=%d",
+               current_id, cur_order, n_displays);
     for (int i = 1; i <= n_displays; i++) {
         int candidate_order = (cur_order + i) % n_displays;
         display_entry_t *d = display_registry_get(candidate_order);
+        switch_log("  candidate order=%d → %s id=%d enabled=%d",
+                   candidate_order,
+                   d ? d->name : "(null)",
+                   d ? d->id : -1,
+                   d ? d->enabled : -1);
         if (d && d->enabled) return d->id;
     }
+    switch_log("  no enabled display found, staying at id=%d", current_id);
     return current_id;  /* no other enabled display */
 }
 
@@ -119,7 +129,7 @@ void display_registry_save(void)
     if (config_path(path, sizeof(path)) < 0) return;
 
     FILE *f = fopen(path, "w");
-    if (!f) { printf("G510s: could not write %s\n", path); return; }
+    if (!f) { LERROR("could not write %s", path); return; }
 
     fprintf(f, "# id enabled order startup\n");
     for (int i = 0; i < n_displays; i++) {

@@ -159,6 +159,13 @@ void *key_function(void *lcdlist) {
     LDEBUG("starting, highest open fd = %d", max_fd);
   }
 
+  /* Wait for startup animation to finish before setting M-key LED state.
+   * set_mkey_state holds libg15_mutex during USB control transfers (~7s on
+   * some G510 units), which would block update_function from writing
+   * animation frames if called immediately. */
+  while (!startup_anim_done && !leaving)
+    usleep(10000);
+
   /* Set M-key LED state from saved config.  Done here (not in main thread)
    * so a slow USB wake-up never blocks the GTK event loop.  Same path as
    * the hotplug reconnect below. */
@@ -309,6 +316,20 @@ void *update_function(void *lcdlist) {
   static int screen_prev = -1;  /* screen id seen on previous iteration */
 
   while (!leaving) {
+    /* During startup animation: write frames prepared by anim_thread.
+     * anim_thread copies pixels into anim_lcd_buf and sets anim_frame_ready;
+     * we own libg15_mutex here so writePixmapToLCD doesn't race with key_function. */
+    if (!startup_anim_done) {
+      if (anim_frame_ready) {
+        pthread_mutex_lock(&libg15_mutex);
+        writePixmapToLCD(anim_lcd_buf);
+        pthread_mutex_unlock(&libg15_mutex);
+        anim_frame_ready = 0;
+      }
+      usleep(20000);
+      continue;
+    }
+
     /* Heartbeat — confirms update thread is alive even when LCD is unchanged */
     {
       static time_t _last_hb = 0;

@@ -36,6 +36,7 @@
 
 #include "g510s.h"
 #include "g510s-display-registry.h"
+#include "g510s-startup.h"
 
 extern void displays_gui_init(GtkBuilder *builder);
 
@@ -270,6 +271,9 @@ int main(int argc, char *argv[]) {
       LWARN("libg15 init failed — no device found, continuing without keyboard");
   }
   LINFO("libg15 init done");
+
+  if (device_found)
+    startup_animation();
 
   // init uinput only if a device is found
   if (device_found) {

@@ -121,6 +121,9 @@ struct g510s_data_s {
 volatile int leaving;
 volatile int update;
 volatile int device_found;
+volatile int startup_anim_done;
+volatile int anim_frame_ready;
+unsigned char anim_lcd_buf[1048];  /* animation frame shared with update_function */
 volatile unsigned int connected_clients;
 volatile unsigned int current_key_state;
 
